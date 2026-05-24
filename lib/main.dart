@@ -94,6 +94,9 @@ class MatchItApp extends StatelessWidget {
   }
 }
 
+/// 登录页：小红书式「先体验、后绑定」
+/// - 先逛逛 / Continue → guest-login
+/// - Continue with Phone → guest-login + bind-phone
 class MatchItLoginPage extends StatefulWidget {
   const MatchItLoginPage({super.key});
 
@@ -111,12 +114,14 @@ class _MatchItLoginPageState extends State<MatchItLoginPage>
   String? _selectedArea;
   bool _isLoading = false;
 
+  /// 「先逛逛，暂不登录」→ 仅游客注册，不绑手机
   Future<void> _enterAsGuest() async {
     setState(() => _isLoading = true);
     try {
-      final session = await authService.guestLogin();
-      if (!mounted) return;
       final name = _nameController.text.trim();
+      final session = await authService.guestLogin(
+        username: name.isEmpty ? null : name,
+      );
       await _openAreaSelection(
         name.isEmpty ? '游客' : name,
         session,
@@ -132,6 +137,7 @@ class _MatchItLoginPageState extends State<MatchItLoginPage>
     }
   }
 
+  /// 「Continue with Phone」→ 游客登录 + 绑定手机 + 进区域选择
   Future<void> _bindPhoneAndContinue() async {
     final phone = _accountController.text.trim();
     if (!RegExp(r'^1[3-9]\d{9}$').hasMatch(phone)) {
@@ -153,10 +159,16 @@ class _MatchItLoginPageState extends State<MatchItLoginPage>
 
     setState(() => _isLoading = true);
     try {
-      final session = await authService.guestLogin();
-      await authService.bindPhone(session: session, phone: phone);
-      if (!mounted) return;
       final name = _nameController.text.trim();
+      final session = await authService.guestLogin(
+        username: name.isEmpty ? null : name,
+      );
+      await authService.bindPhone(
+        session: session,
+        phone: phone,
+        username: name.isEmpty ? null : name,
+      );
+      if (!mounted) return;
       await _openAreaSelection(
         name.isEmpty ? '用户${phone.substring(phone.length - 4)}' : name,
         session,
@@ -172,6 +184,7 @@ class _MatchItLoginPageState extends State<MatchItLoginPage>
     }
   }
 
+  /// 携带 AuthSession 进入兴趣区域选择页
   Future<void> _openAreaSelection(String name, AuthSession session) async {
     final selectedArea = await Navigator.of(context).push<String>(
       MaterialPageRoute<String>(
@@ -203,37 +216,38 @@ class _MatchItLoginPageState extends State<MatchItLoginPage>
     );
   }
 
+  /// 蓝色 Continue：有手机号则绑定，否则游客登录（均调后端）
   Future<void> _goToAreaSelection() async {
     final name = _nameController.text.trim();
     final account = _accountController.text.trim();
 
-    if (name.isEmpty || account.isEmpty) {
-      await showDialog<void>(
-        context: context,
-        builder: (context) {
-          return AlertDialog(
-            title: const Text('请补全信息'),
-            content: const Text('名字和手机号/邮箱都需要填写才能继续。'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(context).pop(),
-                child: const Text('知道了'),
-              ),
-            ],
-          );
-        },
-      );
+    // 填了合法手机号 → 游客登录 + 绑定手机
+    if (account.isNotEmpty && RegExp(r'^1[3-9]\d{9}$').hasMatch(account)) {
+      await _bindPhoneAndContinue();
       return;
     }
 
-    final selectedArea = await Navigator.of(context).push<String>(
-      MaterialPageRoute<String>(
-        builder: (_) => AreaSelectionPage(name: name),
-      ),
-    );
-
-    if (selectedArea != null && mounted) {
-      setState(() => _selectedArea = selectedArea);
+    // Continue / 填姓名或邮箱：同样走后端游客注册（先体验后绑定）
+    setState(() => _isLoading = true);
+    try {
+      final session = await authService.guestLogin(
+        username: name.isEmpty
+            ? (account.isNotEmpty ? account.split('@').first : null)
+            : name,
+      );
+      if (!mounted) return;
+      final displayName = name.isNotEmpty
+          ? name
+          : (account.isNotEmpty ? account.split('@').first : '游客');
+      await _openAreaSelection(displayName, session);
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      _showAuthError('注册失败', e.message);
+    } catch (e) {
+      if (!mounted) return;
+      _showAuthError('无法连接后端', '请确认 API 已启动：http://localhost:8080');
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
     }
   }
 
@@ -823,6 +837,7 @@ class _RecommendSortBreakdown {
   final bool isPinned;
 }
 
+  /// 首页 Feed：展示推荐/匹配等 Tab；authSession 非空时显示游客/已绑定横幅
 class MainFeedPage extends StatefulWidget {
   const MainFeedPage({
     super.key,
@@ -852,6 +867,7 @@ class _MainFeedPageState extends State<MainFeedPage>
     _authSession = widget.authSession;
   }
 
+  /// Feed 内「绑定手机」弹窗（游客升级为正式用户）
   Future<void> _showBindPhoneDialog() async {
     final controller = TextEditingController();
     final phone = await showDialog<String>(
@@ -893,7 +909,11 @@ class _MainFeedPageState extends State<MainFeedPage>
 
     setState(() => _isBinding = true);
     try {
-      await authService.bindPhone(session: _authSession!, phone: phone);
+      await authService.bindPhone(
+        session: _authSession!,
+        phone: phone,
+        username: widget.user.name,
+      );
       if (!mounted) return;
       setState(() {});
       ScaffoldMessenger.of(context).showSnackBar(
@@ -914,6 +934,7 @@ class _MainFeedPageState extends State<MainFeedPage>
     }
   }
 
+  /// 顶部身份横幅：橙色=游客，绿色=已绑定手机
   Widget _buildAuthStatusBanner() {
     final session = _authSession;
     if (session == null) return const SizedBox.shrink();

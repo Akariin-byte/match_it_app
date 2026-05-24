@@ -49,13 +49,13 @@ CREATE INDEX IF NOT EXISTS idx_match_posts_host_vector_hnsw
 
 CREATE TABLE IF NOT EXISTS users (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    openid      TEXT NOT NULL UNIQUE,
-    phone       TEXT UNIQUE,
+    device_id   VARCHAR(128) NOT NULL UNIQUE,
+    openid      TEXT UNIQUE,
     is_guest    BOOLEAN NOT NULL DEFAULT true,
-    nickname    TEXT NOT NULL DEFAULT '',
-    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+    username    VARCHAR(64) NOT NULL DEFAULT '',
+    phone       TEXT UNIQUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX IF NOT EXISTS idx_users_phone ON users (phone) WHERE phone IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_users_device_id ON users (device_id);
 CREATE INDEX IF NOT EXISTS idx_users_is_guest ON users (is_guest);

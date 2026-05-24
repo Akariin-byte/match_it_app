@@ -1,3 +1,4 @@
+// JWT 签发与解析：Token 内携带 user_id、is_guest，供 AuthMiddleware 使用。
 package auth
 
 import (
@@ -7,19 +8,22 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
+// Claims JWT 载荷，与中间件注入 Context 的字段一致
 type Claims struct {
-	UserID  string `json:"user_id"`
-	OpenID  string `json:"openid"`
-	IsGuest bool   `json:"is_guest"`
+	UserID  string `json:"user_id"`  // 用户 UUID
+	OpenID  string `json:"openid"`     // 第三方绑定标识（微信等），游客可为空
+	IsGuest bool   `json:"is_guest"`   // true=游客，false=已绑定手机
 	jwt.RegisteredClaims
 }
 
+// JWT 令牌管理器
 type JWT struct {
-	secret     []byte
-	guestTTL   time.Duration
-	memberTTL  time.Duration
+	secret    []byte
+	guestTTL  time.Duration // 游客 Token 有效期
+	memberTTL time.Duration // 正式用户 Token 有效期
 }
 
+// NewJWT 创建 JWT 管理器，secret 来自环境变量 JWT_SECRET
 func NewJWT(secret string, guestTTL, memberTTL time.Duration) (*JWT, error) {
 	if secret == "" {
 		return nil, fmt.Errorf("JWT secret is required")
@@ -37,6 +41,7 @@ func NewJWT(secret string, guestTTL, memberTTL time.Duration) (*JWT, error) {
 	}, nil
 }
 
+// Issue 签发 Token，游客与正式用户使用不同时长
 func (j *JWT) Issue(userID, openid string, isGuest bool) (token string, expiresAt time.Time, err error) {
 	ttl := j.memberTTL
 	if isGuest {
@@ -59,6 +64,7 @@ func (j *JWT) Issue(userID, openid string, isGuest bool) (token string, expiresA
 	return signed, expiresAt, err
 }
 
+// Parse 校验并解析 Bearer Token
 func (j *JWT) Parse(tokenString string) (*Claims, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &Claims{}, func(token *jwt.Token) (any, error) {
 		if token.Method != jwt.SigningMethodHS256 {

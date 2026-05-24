@@ -1,3 +1,4 @@
+// Gin 鉴权中间件：解析 JWT，向 Context 注入 user_id / is_guest
 package middleware
 
 import (
@@ -9,13 +10,15 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Context 键名，Handler 中通过 c.Get(ContextUserID) 或 GetUserID(c) 读取
 const (
 	ContextUserID  = "user_id"
-	ContextOpenID  = "openid"
 	ContextIsGuest = "is_guest"
+	ContextOpenID  = "openid"
 )
 
-func JWTAuth(jwtMgr *auth.JWT) gin.HandlerFunc {
+// AuthMiddleware 校验 Authorization: Bearer <token>，注入用户身份
+func AuthMiddleware(jwtMgr *auth.JWT) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractBearer(c.GetHeader("Authorization"))
 		if token == "" {
@@ -30,22 +33,21 @@ func JWTAuth(jwtMgr *auth.JWT) gin.HandlerFunc {
 		}
 
 		c.Set(ContextUserID, claims.UserID)
-		c.Set(ContextOpenID, claims.OpenID)
 		c.Set(ContextIsGuest, claims.IsGuest)
+		c.Set(ContextOpenID, claims.OpenID)
 		c.Next()
 	}
 }
 
-// GuestOnly 仅允许游客身份访问（用于 BindPhone 升级流程）
+// JWTAuth AuthMiddleware 别名，兼容旧引用
+func JWTAuth(jwtMgr *auth.JWT) gin.HandlerFunc {
+	return AuthMiddleware(jwtMgr)
+}
+
+// GuestOnly 仅允许游客访问（如 bind-phone 升级流程）
 func GuestOnly() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		raw, ok := c.Get(ContextIsGuest)
-		if !ok {
-			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
-			return
-		}
-		isGuest, ok := raw.(bool)
-		if !ok || !isGuest {
+		if !isGuestFromContext(c) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "guest account required"})
 			return
 		}
@@ -53,21 +55,46 @@ func GuestOnly() gin.HandlerFunc {
 	}
 }
 
-// RegisteredOnly 仅允许已绑定手机号的正式用户
+// RegisteredOnly 仅允许正式用户（isGuest=false）；游客访问返回 403
 func RegisteredOnly() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		raw, ok := c.Get(ContextIsGuest)
-		if !ok {
+		if _, ok := GetUserID(c); !ok {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "authentication required"})
 			return
 		}
-		isGuest, ok := raw.(bool)
-		if !ok || isGuest {
-			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{"error": "registered account required"})
+		if isGuestFromContext(c) {
+			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
+				"error":   "registered account required",
+				"message": "请先绑定手机号后再进行此操作",
+			})
 			return
 		}
 		c.Next()
 	}
+}
+
+// GetUserID 读取当前操作者 ID，需先经过 AuthMiddleware
+func GetUserID(c *gin.Context) (string, bool) {
+	raw, ok := c.Get(ContextUserID)
+	if !ok {
+		return "", false
+	}
+	id, ok := raw.(string)
+	return id, ok && id != ""
+}
+
+// IsGuest 当前用户是否为游客
+func IsGuest(c *gin.Context) bool {
+	return isGuestFromContext(c)
+}
+
+func isGuestFromContext(c *gin.Context) bool {
+	raw, ok := c.Get(ContextIsGuest)
+	if !ok {
+		return true
+	}
+	isGuest, ok := raw.(bool)
+	return !ok || isGuest
 }
 
 func extractBearer(header string) string {
