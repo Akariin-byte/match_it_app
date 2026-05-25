@@ -9,6 +9,7 @@ type MatchPost struct {
 	Description      string    `json:"description"`
 	CurrentMembers   int       `json:"currentMembers"`
 	MaxMembers       int       `json:"maxMembers"`
+	MaxPeople        int       `json:"maxPeople"`
 	Area             string    `json:"area"`
 	Tab              string    `json:"tab"`
 	HardcoreScore    int       `json:"hardcoreScore"`
@@ -20,6 +21,8 @@ type MatchPost struct {
 	HostCreditScore  int       `json:"hostCreditScore"`
 	EventDateTime    time.Time `json:"eventDateTime"`
 	EventLocation    string    `json:"eventLocation"`
+	CostType         string    `json:"costType,omitempty"`
+	Amount           *float64  `json:"amount,omitempty"`
 	IsPinned         bool      `json:"isPinned"`
 	PinPriority      int       `json:"pinPriority"`
 }

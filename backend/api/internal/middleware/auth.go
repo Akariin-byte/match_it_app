@@ -12,18 +12,32 @@ import (
 
 // Context 键名，Handler 中通过 c.Get(ContextUserID) 或 GetUserID(c) 读取
 const (
-	ContextUserID  = "user_id"
-	ContextIsGuest = "is_guest"
-	ContextOpenID  = "openid"
+	ContextUserID      = "user_id"
+	ContextIsGuest     = "is_guest"
+	ContextOpenID      = "openid"
+	ContextAccessToken = "access_token"
+	ContextTokenExpiry = "token_expiry"
 )
 
 // AuthMiddleware 校验 Authorization: Bearer <token>，注入用户身份
-func AuthMiddleware(jwtMgr *auth.JWT) gin.HandlerFunc {
+func AuthMiddleware(jwtMgr *auth.JWT, denylist *auth.TokenDenylist) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		token := extractBearer(c.GetHeader("Authorization"))
 		if token == "" {
 			c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing authorization token"})
 			return
+		}
+
+		if denylist != nil {
+			denied, err := denylist.IsDenied(c.Request.Context(), token)
+			if err != nil {
+				c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": "auth check failed"})
+				return
+			}
+			if denied {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "token revoked"})
+				return
+			}
 		}
 
 		claims, err := jwtMgr.Parse(token)
@@ -35,13 +49,17 @@ func AuthMiddleware(jwtMgr *auth.JWT) gin.HandlerFunc {
 		c.Set(ContextUserID, claims.UserID)
 		c.Set(ContextIsGuest, claims.IsGuest)
 		c.Set(ContextOpenID, claims.OpenID)
+		c.Set(ContextAccessToken, token)
+		if claims.ExpiresAt != nil {
+			c.Set(ContextTokenExpiry, claims.ExpiresAt.Time)
+		}
 		c.Next()
 	}
 }
 
 // JWTAuth AuthMiddleware 别名，兼容旧引用
 func JWTAuth(jwtMgr *auth.JWT) gin.HandlerFunc {
-	return AuthMiddleware(jwtMgr)
+	return AuthMiddleware(jwtMgr, nil)
 }
 
 // GuestOnly 仅允许游客访问（如 bind-phone 升级流程）
@@ -64,8 +82,9 @@ func RegisteredOnly() gin.HandlerFunc {
 		}
 		if isGuestFromContext(c) {
 			c.AbortWithStatusJSON(http.StatusForbidden, gin.H{
-				"error":   "registered account required",
+				"error":   "registered_account_required",
 				"message": "请先绑定手机号后再进行此操作",
+				"action":  "bind_phone",
 			})
 			return
 		}

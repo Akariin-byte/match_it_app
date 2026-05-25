@@ -16,6 +16,7 @@ $ApiDir = Join-Path $BackendRoot "api"
 $EnvFile = Join-Path $ApiDir ".env"
 $HealthUrl = "http://localhost:8080/health"
 $PostgresContainer = "matchit-postgres"
+$RedisContainer = "matchit-redis"
 
 function Write-Step([string]$Message) {
     Write-Host ""
@@ -70,6 +71,25 @@ function Test-ApiHealthy {
     } catch {
         return $false
     }
+}
+
+function Wait-RedisHealthy {
+    param([int]$TimeoutSec = 60)
+
+    Write-Step "Waiting for Redis ($RedisContainer) ..."
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+
+    while ((Get-Date) -lt $deadline) {
+        docker exec $RedisContainer redis-cli ping 2>$null | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Ok "Redis is ready"
+            return $true
+        }
+        Start-Sleep -Seconds 2
+    }
+
+    Write-Err "Redis not ready within ${TimeoutSec}s. Run: docker logs $RedisContainer"
+    return $false
 }
 
 function Wait-PostgresHealthy {
@@ -192,7 +212,7 @@ if (Test-ApiHealthy) {
 if (-not $SkipDocker) {
     if (-not (Test-DockerReady)) { exit 1 }
 
-    Write-Step "docker compose up -d (Postgres) ..."
+    Write-Step "docker compose up -d (Postgres + Redis) ..."
     Push-Location $BackendRoot
     try {
         docker compose up -d 2>&1 | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
@@ -206,8 +226,9 @@ if (-not $SkipDocker) {
     Write-Ok "docker compose up -d done"
 
     if (-not (Wait-PostgresHealthy)) { exit 1 }
+    if (-not (Wait-RedisHealthy)) { exit 1 }
 } else {
-    Write-WarnMsg "Skipped Docker; assuming Postgres is already running"
+    Write-WarnMsg "Skipped Docker; assuming Postgres and Redis are already running"
 }
 
 Start-MatchitApi
@@ -219,6 +240,9 @@ if (-not $Foreground) {
         if (Test-ApiHealthy) {
             $h = Invoke-RestMethod $HealthUrl -TimeoutSec 3
             Write-Ok "API ready: $HealthUrl  (postCount=$($h.postCount))"
+            Write-Host ""
+            Write-Host "Database UI (Adminer): http://localhost:5050" -ForegroundColor DarkGray
+            Write-Host "  System=PostgreSQL  Server=postgres  User=matchit  Password=matchit  DB=matchit" -ForegroundColor DarkGray
             Write-Host ""
             Write-Host "Examples:" -ForegroundColor DarkGray
             Write-Host "  Invoke-RestMethod $HealthUrl"

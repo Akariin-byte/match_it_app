@@ -3,7 +3,12 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import 'services/auth_service.dart';
+import 'services/token_storage.dart';
 import 'services/vector_match_service.dart';
+import 'pages/publish_page.dart';
+import 'widgets/bottom_publish_bar.dart';
+import 'widgets/login_bottom_sheet.dart';
+import 'widgets/phone_auth_form.dart';
 
 void main() {
   _initVectorIndex();
@@ -104,28 +109,16 @@ class MatchItLoginPage extends StatefulWidget {
   State<MatchItLoginPage> createState() => _MatchItLoginPageState();
 }
 
-class _MatchItLoginPageState extends State<MatchItLoginPage>
-    with TickerProviderStateMixin {
-  final TextEditingController _nameController = TextEditingController();
-  final TextEditingController _accountController = TextEditingController();
-  final FocusNode _nameFocusNode = FocusNode();
-  final FocusNode _accountFocusNode = FocusNode();
-  late final AnimationController _pulseController;
+class _MatchItLoginPageState extends State<MatchItLoginPage> {
   String? _selectedArea;
   bool _isLoading = false;
 
-  /// 「先逛逛，暂不登录」→ 仅游客注册，不绑手机
+  /// 「先逛逛，暂不登录」→ 仅游客，不绑手机
   Future<void> _enterAsGuest() async {
     setState(() => _isLoading = true);
     try {
-      final name = _nameController.text.trim();
-      final session = await authService.guestLogin(
-        username: name.isEmpty ? null : name,
-      );
-      await _openAreaSelection(
-        name.isEmpty ? '游客' : name,
-        session,
-      );
+      final session = await authService.guestLogin();
+      await _openAreaSelection(session.displayName, session);
     } on AuthException catch (e) {
       if (!mounted) return;
       _showAuthError('游客登录失败', e.message);
@@ -137,51 +130,10 @@ class _MatchItLoginPageState extends State<MatchItLoginPage>
     }
   }
 
-  /// 「Continue with Phone」→ 游客登录 + 绑定手机 + 进区域选择
-  Future<void> _bindPhoneAndContinue() async {
-    final phone = _accountController.text.trim();
-    if (!RegExp(r'^1[3-9]\d{9}$').hasMatch(phone)) {
-      await showDialog<void>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: const Text('请输入手机号'),
-          content: const Text('绑定需要有效的 11 位中国大陆手机号。'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(),
-              child: const Text('知道了'),
-            ),
-          ],
-        ),
-      );
-      return;
-    }
-
-    setState(() => _isLoading = true);
-    try {
-      final name = _nameController.text.trim();
-      final session = await authService.guestLogin(
-        username: name.isEmpty ? null : name,
-      );
-      await authService.bindPhone(
-        session: session,
-        phone: phone,
-        username: name.isEmpty ? null : name,
-      );
-      if (!mounted) return;
-      await _openAreaSelection(
-        name.isEmpty ? '用户${phone.substring(phone.length - 4)}' : name,
-        session,
-      );
-    } on AuthException catch (e) {
-      if (!mounted) return;
-      _showAuthError('绑定失败', e.message);
-    } catch (e) {
-      if (!mounted) return;
-      _showAuthError('无法连接后端', '请确认 API 已启动：http://localhost:8080');
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
+  Future<void> _onPhoneAuthSuccess(AuthSession session) async {
+    await tokenStorage.saveSession(session);
+    if (!mounted) return;
+    await _openAreaSelection(session.displayName, session);
   }
 
   /// 携带 AuthSession 进入兴趣区域选择页
@@ -216,72 +168,6 @@ class _MatchItLoginPageState extends State<MatchItLoginPage>
     );
   }
 
-  /// 蓝色 Continue：有手机号则绑定，否则游客登录（均调后端）
-  Future<void> _goToAreaSelection() async {
-    final name = _nameController.text.trim();
-    final account = _accountController.text.trim();
-
-    // 填了合法手机号 → 游客登录 + 绑定手机
-    if (account.isNotEmpty && RegExp(r'^1[3-9]\d{9}$').hasMatch(account)) {
-      await _bindPhoneAndContinue();
-      return;
-    }
-
-    // Continue / 填姓名或邮箱：同样走后端游客注册（先体验后绑定）
-    setState(() => _isLoading = true);
-    try {
-      final session = await authService.guestLogin(
-        username: name.isEmpty
-            ? (account.isNotEmpty ? account.split('@').first : null)
-            : name,
-      );
-      if (!mounted) return;
-      final displayName = name.isNotEmpty
-          ? name
-          : (account.isNotEmpty ? account.split('@').first : '游客');
-      await _openAreaSelection(displayName, session);
-    } on AuthException catch (e) {
-      if (!mounted) return;
-      _showAuthError('注册失败', e.message);
-    } catch (e) {
-      if (!mounted) return;
-      _showAuthError('无法连接后端', '请确认 API 已启动：http://localhost:8080');
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    _pulseController = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1400),
-    )..repeat(reverse: true);
-
-    _accountFocusNode.addListener(_handleFocusChange);
-    _nameFocusNode.addListener(_handleFocusChange);
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _accountController.dispose();
-    _nameFocusNode.dispose();
-    _accountFocusNode.dispose();
-    _pulseController.dispose();
-    super.dispose();
-  }
-
-  bool get _isFieldFocused =>
-      _accountFocusNode.hasFocus || _nameFocusNode.hasFocus;
-
-  void _handleFocusChange() {
-    if (mounted) {
-      setState(() {});
-    }
-  }
-
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -304,11 +190,11 @@ class _MatchItLoginPageState extends State<MatchItLoginPage>
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Welcome to MATCHit',
+                '手机号登录 / 注册',
                 style: theme.textTheme.headlineLarge,
                 textAlign: TextAlign.left,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: 12),
               if (_selectedArea != null) ...[
                 Text(
                   'Last selected area: ${_selectedArea!.toUpperCase()}',
@@ -319,10 +205,10 @@ class _MatchItLoginPageState extends State<MatchItLoginPage>
                 const SizedBox(height: 12),
               ],
               Text(
-                'Quickly sign in to discover your next match with a clean, iOS-style experience.',
+                '输入手机号后自动识别：已注册拉取昵称登录，未注册可填昵称（选填）。',
                 style: theme.textTheme.bodyLarge,
               ),
-              const SizedBox(height: 30),
+              const SizedBox(height: 24),
               Container(
                 width: double.infinity,
                 decoration: BoxDecoration(
@@ -331,89 +217,22 @@ class _MatchItLoginPageState extends State<MatchItLoginPage>
                   boxShadow: cardShadow,
                 ),
                 padding: const EdgeInsets.all(24),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    _buildTextField(
-                      controller: _nameController,
-                      focusNode: _nameFocusNode,
-                      label: 'Name',
-                      hint: 'Your name',
-                      blue: blue,
+                child: PhoneAuthForm(
+                  onSuccess: _onPhoneAuthSuccess,
+                ),
+              ),
+              const SizedBox(height: 16),
+              Center(
+                child: TextButton(
+                  onPressed: _isLoading ? null : _enterAsGuest,
+                  child: const Text(
+                    '先逛逛，暂不登录',
+                    style: TextStyle(
+                      fontSize: 15,
+                      fontWeight: FontWeight.w600,
+                      color: Color(0xFF002FA7),
                     ),
-                    const SizedBox(height: 16),
-                    _buildTextField(
-                      controller: _accountController,
-                      focusNode: _accountFocusNode,
-                      label: 'Phone number or email',
-                      hint: 'Enter phone number or email',
-                      blue: blue,
-                    ),
-                    const SizedBox(height: 24),
-                    Text(
-                      'Continue with',
-                      style: theme.textTheme.titleLarge,
-                    ),
-                    const SizedBox(height: 16),
-                    Column(
-                      children: [
-                        SocialLoginButton(
-                          label: 'Continue with Phone',
-                          icon: Icons.phone_android,
-                          backgroundColor: const Color(0xFFF5F5F7),
-                          onTap: _isLoading ? () {} : _bindPhoneAndContinue,
-                        ),
-                        const SizedBox(height: 12),
-                        SocialLoginButton(
-                          label: 'Continue with Apple',
-                          icon: Icons.apple,
-                          backgroundColor: const Color(0xFFF5F5F7),
-                          onTap: () {},
-                        ),
-                        const SizedBox(height: 12),
-                        SocialLoginButton(
-                          label: 'Continue with Google',
-                          icon: Icons.mail_outline,
-                          backgroundColor: const Color(0xFFF5F5F7),
-                          onTap: () {},
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    TextButton(
-                      onPressed: _isLoading ? null : _enterAsGuest,
-                      child: const Text(
-                        '先逛逛，暂不登录',
-                        style: TextStyle(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          color: Color(0xFF002FA7),
-                        ),
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    ScaleTapButton(
-                      onTap: _isLoading ? () {} : _goToAreaSelection,
-                      borderRadius: BorderRadius.circular(50),
-                      child: Container(
-                        height: 56,
-                        alignment: Alignment.center,
-                        decoration: BoxDecoration(
-                          color: blue,
-                          borderRadius: BorderRadius.circular(50),
-                        ),
-                        child: const Text(
-                          'Continue',
-                          style: TextStyle(
-                            color: Colors.white,
-                            fontSize: 16,
-                            fontWeight: FontWeight.w700,
-                            letterSpacing: 0.5,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
+                  ),
                 ),
               ),
             ],
@@ -440,68 +259,6 @@ class _MatchItLoginPageState extends State<MatchItLoginPage>
             ),
         ],
       ),
-    );
-  }
-
-  Widget _buildTextField({
-    required TextEditingController controller,
-    required FocusNode focusNode,
-    required String label,
-    required String hint,
-    required Color blue,
-  }) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          label,
-          style: const TextStyle(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: Colors.black87,
-          ),
-        ),
-        const SizedBox(height: 8),
-        AnimatedBuilder(
-          animation: _pulseController,
-          builder: (context, child) {
-            final borderOpacity = focusNode.hasFocus
-                ? 0.2 + _pulseController.value * 0.4
-                : 0.0;
-            return Container(
-              decoration: BoxDecoration(
-                color: const Color(0xFFF8F8FA),
-                borderRadius: BorderRadius.circular(18),
-                border: Border.all(
-                  color: blue.withValues(alpha: borderOpacity),
-                  width: focusNode.hasFocus ? 2 : 1,
-                ),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
-              child: child,
-            );
-          },
-          child: TextField(
-            controller: controller,
-            focusNode: focusNode,
-            keyboardType: TextInputType.emailAddress,
-            style: const TextStyle(
-              fontSize: 16,
-              color: Colors.black,
-              fontWeight: FontWeight.w500,
-            ),
-            decoration: InputDecoration(
-              hintText: hint,
-              hintStyle: const TextStyle(
-                color: Colors.black45,
-                fontWeight: FontWeight.w400,
-              ),
-              border: InputBorder.none,
-              contentPadding: const EdgeInsets.symmetric(vertical: 16),
-            ),
-          ),
-        ),
-      ],
     );
   }
 }
@@ -646,6 +403,7 @@ class MatchPost {
     required this.description,
     required this.currentMembers,
     required this.maxMembers,
+    this.maxPeople,
     required this.area,
     required this.tab,
     required this.hardcoreScore,
@@ -666,6 +424,8 @@ class MatchPost {
   final String description;
   final int currentMembers;
   final int maxMembers;
+  /// 招募人数上限（与 maxMembers 一致，发布页 maxPeople 对接）
+  final int? maxPeople;
   final String area;
   final String tab;
   final int hardcoreScore;
@@ -691,6 +451,8 @@ class MatchPost {
   final int pinPriority;
 
   bool get isFull => currentMembers >= maxMembers;
+
+  int get peopleLimit => maxPeople ?? maxMembers;
 }
 
 final List<MatchPost> mockPosts = [
@@ -858,80 +620,173 @@ class _MainFeedPageState extends State<MainFeedPage>
   String _searchText = '';
   Map<String, double>? _vectorMatchScoreCache;
   AuthSession? _authSession;
-  bool _isBinding = false;
+  /// 是否处于「已登录/已绑定」UI 状态（退出后为 false，即使 device_id 对应正式账号）
+  bool _isLoggedIn = false;
+
+  bool get _showsRegisteredUI =>
+      _isLoggedIn && _authSession != null && !_authSession!.isGuest;
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
     _authSession = widget.authSession;
+    _isLoggedIn =
+        widget.authSession != null && !widget.authSession!.isGuest;
+    _restoreSessionFromStorage();
   }
 
-  /// Feed 内「绑定手机」弹窗（游客升级为正式用户）
-  Future<void> _showBindPhoneDialog() async {
-    final controller = TextEditingController();
-    final phone = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('绑定手机号'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.phone,
-          maxLength: 11,
-          decoration: const InputDecoration(
-            labelText: '手机号',
-            hintText: '13800138000',
-            counterText: '',
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(controller.text.trim()),
-            child: const Text('绑定'),
-          ),
-        ],
-      ),
-    );
-    controller.dispose();
+  /// 从本地 secure storage 恢复已绑定用户的 Token
+  Future<void> _restoreSessionFromStorage() async {
+    final saved = await tokenStorage.loadSession();
+    if (!mounted || saved == null) return;
+    if (saved.isGuest) return;
+    setState(() {
+      _authSession = saved;
+      _isLoggedIn = true;
+    });
+  }
 
-    if (phone == null || phone.isEmpty || _authSession == null) return;
-    if (!RegExp(r'^1[3-9]\d{9}$').hasMatch(phone)) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('请输入有效的 11 位手机号')),
+  /// 打开登录/绑定 BottomSheet
+  Future<void> _showLoginBottomSheet() async {
+    await LoginBottomSheet.show(
+      context,
+      initialSession: _authSession,
+      onLoginSuccess: (session) {
+        setState(() {
+          _authSession = session;
+          _isLoggedIn = true;
+        });
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('登录成功，已绑定 ${session.phone ?? ''}')),
+        );
+      },
+    );
+  }
+
+  /// 发布入口：游客引导登录，正式用户进发布页
+  Future<void> _openPublishPage() async {
+    if (!_showsRegisteredUI) {
+      final goLogin = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('登录后发布'),
+          content: const Text('发布搭子帖需要绑定手机号，与小红书一致：先登录再发布。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('去登录'),
+            ),
+          ],
+        ),
       );
+      if (goLogin == true && mounted) {
+        await _showLoginBottomSheet();
+      }
       return;
     }
 
-    setState(() => _isBinding = true);
+    final published = await Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => PublishPage(
+          hostName: _authSession?.displayName ?? widget.user.name,
+          defaultArea: widget.user.area,
+          hostFaceTraits: widget.user.faceTraits,
+          intensityScore: widget.user.intensityScore,
+          authSession: _authSession,
+        ),
+      ),
+    );
+
+    if (published == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('发布成功，Feed 刷新将在 API 对接后生效')),
+      );
+    }
+  }
+
+  /// 退出登录：吊销服务端 Token，清除本地缓存，重新进入游客模式
+  Future<void> _logout() async {
+    final session = _authSession;
+    if (session != null) {
+      try {
+        await authService.logout(session);
+      } catch (_) {
+        // 本地仍清除，方便联调
+      }
+    }
+    await tokenStorage.clear();
+    if (!mounted) return;
+
     try {
-      await authService.bindPhone(
-        session: _authSession!,
-        phone: phone,
-        username: widget.user.name,
-      );
+      final guest = await authService.guestLogin(username: widget.user.name);
       if (!mounted) return;
-      setState(() {});
+      setState(() {
+        _authSession = guest;
+        _isLoggedIn = false;
+      });
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('绑定成功：$phone')),
-      );
-    } on AuthException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('绑定失败：$e')),
+        const SnackBar(content: Text('已退出登录，当前为游客模式')),
       );
     } catch (_) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('无法连接后端，请确认 API 已启动')),
-      );
-    } finally {
-      if (mounted) setState(() => _isBinding = false);
+      setState(() {
+        _authSession = widget.authSession;
+        _isLoggedIn = false;
+      });
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已清除本地登录状态')),
+        );
+      }
     }
+  }
+
+  /// 顶部导航：未登录显示登录入口，已登录显示头像菜单
+  Widget _buildProfileAction() {
+    if (!_showsRegisteredUI) {
+      return IconButton(
+        icon: const Icon(Icons.login_rounded),
+        tooltip: '登录/注册',
+        onPressed: _showLoginBottomSheet,
+      );
+    }
+
+    final session = _authSession!;
+    final name = (_authSession?.displayName ?? widget.user.name).trim();
+    final initial =
+        name.isNotEmpty ? name.substring(0, 1).toUpperCase() : 'U';
+
+    return PopupMenuButton<String>(
+      tooltip: '账号',
+      onSelected: (value) {
+        if (value == 'logout') _logout();
+      },
+      itemBuilder: (context) => [
+        PopupMenuItem(
+          value: 'logout',
+          child: Text('退出登录${session.phone != null ? ' (${session.phone})' : ''}'),
+        ),
+      ],
+      child: Padding(
+        padding: const EdgeInsets.only(right: 8),
+        child: CircleAvatar(
+          radius: 18,
+          backgroundColor: const Color(0xFFE6F0FF),
+          child: Text(
+            initial,
+            style: const TextStyle(
+              color: Color(0xFF002FA7),
+              fontWeight: FontWeight.w800,
+              fontSize: 15,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
   /// 顶部身份横幅：橙色=游客，绿色=已绑定手机
@@ -939,7 +794,7 @@ class _MainFeedPageState extends State<MainFeedPage>
     final session = _authSession;
     if (session == null) return const SizedBox.shrink();
 
-    if (session.isGuest) {
+    if (!_showsRegisteredUI) {
       return Container(
         width: double.infinity,
         margin: const EdgeInsets.only(bottom: 12),
@@ -972,39 +827,16 @@ class _MainFeedPageState extends State<MainFeedPage>
               ),
             ),
             TextButton(
-              onPressed: _isBinding ? null : _showBindPhoneDialog,
-              child: Text(_isBinding ? '绑定中…' : '绑定手机'),
+              onPressed: _showLoginBottomSheet,
+              child: const Text('登录 / 注册'),
             ),
           ],
         ),
       );
     }
 
-    return Container(
-      width: double.infinity,
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFE8F5E9),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFF81C784)),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.verified_user, color: Color(0xFF2E7D32), size: 20),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              '已绑定手机号 ${session.phone ?? ''}',
-              style: const TextStyle(
-                fontWeight: FontWeight.w600,
-                color: Color(0xFF2E7D32),
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
+    // 已登录：右上角头像 + 菜单退出即可，不必再占一条绿色横幅（参考小红书）
+    return const SizedBox.shrink();
   }
 
   /// 向量检索 + Redis 缓存，一次请求只算一遍 matchScore
@@ -1574,16 +1406,19 @@ class _MainFeedPageState extends State<MainFeedPage>
 
     return Scaffold(
       backgroundColor: const Color(0xFFF2F2F7),
+      extendBody: true,
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
         foregroundColor: Colors.black,
-        title: Text('MATCHit 首页'),
+        title: const Text('MATCHit 首页'),
         centerTitle: false,
+        actions: [_buildProfileAction()],
       ),
       body: SafeArea(
+        bottom: false,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
+          padding: const EdgeInsets.fromLTRB(24, 0, 24, 88),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
@@ -1749,6 +1584,10 @@ class _MainFeedPageState extends State<MainFeedPage>
             ],
           ),
         ),
+      ),
+      bottomNavigationBar: BottomPublishBar(
+        onPublish: _openPublishPage,
+        onProfile: _showsRegisteredUI ? _logout : _showLoginBottomSheet,
       ),
     );
   }

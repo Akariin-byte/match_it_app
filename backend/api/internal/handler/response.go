@@ -13,3 +13,15 @@ func JSONOK(c *gin.Context, data any) {
 func JSONError(c *gin.Context, status int, message string) {
 	c.JSON(status, gin.H{"error": message})
 }
+
+// JSONErrorDetail 带 message / action 的错误响应，供前端弹登录窗
+func JSONErrorDetail(c *gin.Context, status int, errCode, message, action string) {
+	body := gin.H{"error": errCode}
+	if message != "" {
+		body["message"] = message
+	}
+	if action != "" {
+		body["action"] = action
+	}
+	c.JSON(status, body)
+}

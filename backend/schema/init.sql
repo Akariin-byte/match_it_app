@@ -36,6 +36,8 @@ CREATE TABLE IF NOT EXISTS match_posts (
     host_face_vector    vector(18) NOT NULL,
     event_date_time     TIMESTAMPTZ,
     event_location      TEXT,
+    cost_type           TEXT,
+    amount              DOUBLE PRECISION,
     is_pinned           BOOLEAN NOT NULL DEFAULT false,
     pin_priority        INT NOT NULL DEFAULT 0,
     is_active           BOOLEAN NOT NULL DEFAULT true,

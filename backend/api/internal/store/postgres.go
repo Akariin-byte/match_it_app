@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"matchit/backend/api/internal/encoder"
@@ -23,7 +24,12 @@ func NewPostgres(ctx context.Context, databaseURL string) (*Postgres, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
-		return pgxvec.RegisterTypes(ctx, conn)
+		if err := pgxvec.RegisterTypes(ctx, conn); err != nil {
+			// 本地 Postgres 未装 pgvector 时仍可跑登录/注册
+			fmt.Printf("pgvector unavailable (posts/seed may fail): %v\n", err)
+			return nil
+		}
+		return nil
 	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, cfg)
@@ -46,13 +52,15 @@ INSERT INTO match_posts (
     id, title, description, area, tab, hardcore_score,
     current_members, max_members, interaction_count, last_active_time,
     match_score, host_nickname, host_credit_score, host_face_traits,
-    host_face_vector, event_date_time, event_location, is_pinned, pin_priority,
+    host_face_vector, event_date_time, event_location, cost_type, amount,
+    is_pinned, pin_priority,
     updated_at
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
     $7, $8, $9, $10,
     $11, $12, $13, $14,
     $15, $16, $17, $18, $19,
+    $20, $21,
     now()
 )
 ON CONFLICT (id) DO UPDATE SET
@@ -72,6 +80,8 @@ ON CONFLICT (id) DO UPDATE SET
     host_face_vector = EXCLUDED.host_face_vector,
     event_date_time = EXCLUDED.event_date_time,
     event_location = EXCLUDED.event_location,
+    cost_type = EXCLUDED.cost_type,
+    amount = EXCLUDED.amount,
     is_pinned = EXCLUDED.is_pinned,
     pin_priority = EXCLUDED.pin_priority,
     updated_at = now()
@@ -97,6 +107,8 @@ func (p *Postgres) UpsertPost(ctx context.Context, post model.MatchPost) error {
 		vec,
 		post.EventDateTime,
 		post.EventLocation,
+		nullIfEmpty(post.CostType),
+		post.Amount,
 		post.IsPinned,
 		post.PinPriority,
 	)
@@ -108,7 +120,7 @@ SELECT
     id, title, description, area, tab, hardcore_score,
     current_members, max_members, interaction_count, last_active_time,
     match_score, host_nickname, host_credit_score, host_face_traits,
-    event_date_time, event_location, is_pinned, pin_priority
+    event_date_time, event_location, cost_type, amount, is_pinned, pin_priority
 FROM match_posts
 WHERE is_active = true
   AND ($1 = '' OR area = $1)
@@ -139,7 +151,7 @@ SELECT
     id, title, description, area, tab, hardcore_score,
     current_members, max_members, interaction_count, last_active_time,
     match_score, host_nickname, host_credit_score, host_face_traits,
-    event_date_time, event_location, is_pinned, pin_priority
+    event_date_time, event_location, cost_type, amount, is_pinned, pin_priority
 FROM match_posts
 WHERE id = $1 AND is_active = true
 `
@@ -160,6 +172,7 @@ func scanPost(row scannable) (model.MatchPost, error) {
 func scanPostRow(row scannable) (model.MatchPost, error) {
 	var post model.MatchPost
 	var eventTime *time.Time
+	var costType *string
 	err := row.Scan(
 		&post.ID,
 		&post.Title,
@@ -177,11 +190,16 @@ func scanPostRow(row scannable) (model.MatchPost, error) {
 		&post.HostFaceTraits,
 		&eventTime,
 		&post.EventLocation,
+		&costType,
+		&post.Amount,
 		&post.IsPinned,
 		&post.PinPriority,
 	)
 	if eventTime != nil {
 		post.EventDateTime = *eventTime
+	}
+	if costType != nil {
+		post.CostType = *costType
 	}
 	return post, err
 }
@@ -190,4 +208,11 @@ func (p *Postgres) CountPosts(ctx context.Context) (int, error) {
 	var n int
 	err := p.pool.QueryRow(ctx, `SELECT COUNT(*) FROM match_posts WHERE is_active = true`).Scan(&n)
 	return n, err
+}
+
+func nullIfEmpty(s string) any {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	return s
 }
