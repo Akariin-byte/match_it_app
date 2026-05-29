@@ -54,5 +54,8 @@ app.*.map.json
 *.exe
 backend/api/matchit-api
 
+# Local dev script output (may contain tokens)
+tools/publish-result.txt
+
 # Docker volumes (if any local data)
 backend/postgres_data/
