@@ -1,19 +1,29 @@
 import 'package:flutter/material.dart';
 
-/// 小红书式底部栏：中间凸起「+」发布入口
+/// 小红书式底栏：首页 | 消息 | + | 私信 | 我
 class BottomPublishBar extends StatelessWidget {
   const BottomPublishBar({
     super.key,
     required this.onPublish,
     this.onHome,
+    this.onMessages,
+    this.onChat,
     this.onProfile,
-    this.homeSelected = true,
+    this.selectedIndex = 0,
+    this.messageBadgeCount = 0,
+    this.chatBadgeCount = 0,
   });
 
   final VoidCallback onPublish;
   final VoidCallback? onHome;
+  final VoidCallback? onMessages;
+  final VoidCallback? onChat;
   final VoidCallback? onProfile;
-  final bool homeSelected;
+
+  /// 0=首页 1=消息(申请) 2=私信 3=我
+  final int selectedIndex;
+  final int messageBadgeCount;
+  final int chatBadgeCount;
 
   static const Color brandColor = Color(0xFF002FA7);
 
@@ -44,16 +54,34 @@ class BottomPublishBar extends StatelessWidget {
                     child: _NavItem(
                       icon: Icons.home_rounded,
                       label: '首页',
-                      selected: homeSelected,
+                      selected: selectedIndex == 0,
                       onTap: onHome,
                     ),
                   ),
-                  const SizedBox(width: 72),
+                  Expanded(
+                    child: _NavItem(
+                      icon: Icons.notifications_none_rounded,
+                      label: '消息',
+                      selected: selectedIndex == 1,
+                      badgeCount: messageBadgeCount,
+                      onTap: onMessages,
+                    ),
+                  ),
+                  const Expanded(child: SizedBox.shrink()),
+                  Expanded(
+                    child: _NavItem(
+                      icon: Icons.chat_bubble_outline_rounded,
+                      label: '私信',
+                      selected: selectedIndex == 2,
+                      badgeCount: chatBadgeCount,
+                      onTap: onChat,
+                    ),
+                  ),
                   Expanded(
                     child: _NavItem(
                       icon: Icons.person_outline_rounded,
                       label: '我',
-                      selected: !homeSelected,
+                      selected: selectedIndex == 3,
                       onTap: onProfile,
                     ),
                   ),
@@ -121,12 +149,14 @@ class _NavItem extends StatelessWidget {
     required this.label,
     required this.selected,
     this.onTap,
+    this.badgeCount = 0,
   });
 
   final IconData icon;
   final String label;
   final bool selected;
   final VoidCallback? onTap;
+  final int badgeCount;
 
   @override
   Widget build(BuildContext context) {
@@ -136,12 +166,40 @@ class _NavItem extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(icon, color: color, size: 24),
+          Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Icon(icon, color: color, size: 22),
+              if (badgeCount > 0)
+                Positioned(
+                  right: -8,
+                  top: -4,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    constraints: const BoxConstraints(minWidth: 14, minHeight: 14),
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFFF3B30),
+                      borderRadius: BorderRadius.circular(7),
+                    ),
+                    child: Text(
+                      badgeCount > 99 ? '99+' : '$badgeCount',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 9,
+                        fontWeight: FontWeight.w700,
+                        height: 1.2,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
           const SizedBox(height: 2),
           Text(
             label,
             style: TextStyle(
-              fontSize: 11,
+              fontSize: 10,
               fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
               color: color,
             ),

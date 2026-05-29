@@ -3,6 +3,7 @@ package handler
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"strings"
@@ -11,9 +12,11 @@ import (
 	"matchit/backend/api/internal/auth"
 	"matchit/backend/api/internal/middleware"
 	"matchit/backend/api/internal/model"
+	"matchit/backend/api/internal/push"
 	"matchit/backend/api/internal/seed"
 	"matchit/backend/api/internal/sms"
 	"matchit/backend/api/internal/store"
+	"matchit/backend/api/internal/ws"
 
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
@@ -27,6 +30,8 @@ type API struct {
 	sms        *sms.Service
 	refresh    *auth.RefreshStore
 	denylist   *auth.TokenDenylist
+	hub        *ws.Hub
+	fcm        *push.FCM
 	smsMock    bool
 	smsCodeTTL time.Duration
 }
@@ -38,6 +43,8 @@ func New(
 	smsSvc *sms.Service,
 	refresh *auth.RefreshStore,
 	denylist *auth.TokenDenylist,
+	hub *ws.Hub,
+	fcm *push.FCM,
 	smsMock bool,
 	smsCodeTTL time.Duration,
 ) *API {
@@ -48,6 +55,8 @@ func New(
 		sms:        smsSvc,
 		refresh:    refresh,
 		denylist:   denylist,
+		hub:        hub,
+		fcm:        fcm,
 		smsMock:    smsMock,
 		smsCodeTTL: smsCodeTTL,
 	}
@@ -61,6 +70,7 @@ func (a *API) Register(r *gin.Engine) {
 	{
 		authGroup := v1.Group("/auth")
 		authGroup.POST("/guest-login", a.GuestLogin)
+		authGroup.POST("/wechat-login", a.WechatLogin)
 		authGroup.POST("/phone-status", a.PhoneStatus)
 		authGroup.POST("/send-code", a.SendCode)
 		authGroup.POST("/login", a.Login)
@@ -73,17 +83,37 @@ func (a *API) Register(r *gin.Engine) {
 		)
 
 		v1.GET("/posts/:id", a.getPost)
+		v1.GET("/posts/:id/members", a.getPostMembers)
+		v1.GET("/posts/:id/comments", a.listPostComments)
 		v1.POST("/seed", a.seedPosts)
 
 		authed := v1.Group("")
 		authed.Use(middleware.AuthMiddleware(a.jwt, a.denylist))
 		authed.GET("/me", a.Me)
+		authed.GET("/me/applications", a.listMyApplications)
+		authed.GET("/me/received-applications", a.listReceivedApplications)
 		authed.POST("/auth/logout", a.Logout)
 		authed.GET("/posts", a.listPosts)
+		authed.GET("/posts/:id/application", a.getMyPostApplication)
+		authed.GET("/posts/:id/received-applications", a.listPostReceivedApplications)
+		authed.POST("/applications/:id/approve", a.approveApplication)
+		authed.POST("/applications/:id/reject", a.rejectApplication)
+		authed.GET("/me/comment-notifications", a.listMyCommentNotifications)
+		authed.POST("/comment-notifications/:id/read", a.markCommentNotificationRead)
 
 		registered := authed.Group("")
 		registered.Use(middleware.RegisteredOnly())
 		registered.POST("/posts", a.createPost)
+		registered.POST("/posts/:id/apply", a.applyToPost)
+		registered.POST("/posts/:id/comments", a.createPostComment)
+		registered.GET("/me/posts", a.listMyPosts)
+		registered.GET("/conversations", a.listConversations)
+		registered.POST("/conversations/dm", a.createOrGetDM)
+		registered.GET("/conversations/:id/messages", a.listConversationMessages)
+		registered.POST("/conversations/:id/read", a.markConversationRead)
+		registered.POST("/device-tokens", a.registerDeviceToken)
+
+		v1.GET("/ws", a.chatWebSocketEntry)
 	}
 }
 
@@ -121,12 +151,35 @@ func (a *API) listPosts(c *gin.Context) {
 	if posts == nil {
 		posts = []model.MatchPost{}
 	}
+	posts = a.enrichPostsWithApplications(c, userID, posts)
 
 	JSONOK(c, gin.H{
 		"data":    posts,
 		"total":   len(posts),
 		"userId":  userID,
 		"isGuest": middleware.IsGuest(c),
+	})
+}
+
+// listMyPosts GET /api/v1/me/posts — 当前用户发布的组局（正式用户；游客 403）
+func (a *API) listMyPosts(c *gin.Context) {
+	userID, ok := middleware.GetUserID(c)
+	if !ok {
+		JSONError(c, http.StatusUnauthorized, "authentication required")
+		return
+	}
+	posts, err := a.db.ListPostsByHost(c.Request.Context(), userID)
+	if err != nil {
+		log.Printf("list my posts user=%s: %v", userID, err)
+		JSONError(c, http.StatusInternalServerError, "failed to list posts")
+		return
+	}
+	if posts == nil {
+		posts = []model.MatchPost{}
+	}
+	JSONOK(c, gin.H{
+		"data":  posts,
+		"total": len(posts),
 	})
 }
 
@@ -145,7 +198,29 @@ func (a *API) getPost(c *gin.Context) {
 	JSONOK(c, post)
 }
 
-// createPost 发布帖子（需正式用户；user_id 来自 JWT Context）
+func (a *API) getPostMembers(c *gin.Context) {
+	postID := strings.TrimSpace(c.Param("id"))
+	if postID == "" {
+		JSONError(c, http.StatusBadRequest, "post id is required")
+		return
+	}
+	members, err := a.db.ListPostMembers(c.Request.Context(), postID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			JSONError(c, http.StatusNotFound, "post not found")
+			return
+		}
+		log.Printf("get post members %s: %v", postID, err)
+		JSONError(c, http.StatusInternalServerError, "failed to list members")
+		return
+	}
+	if members == nil {
+		members = []model.PostMember{}
+	}
+	JSONOK(c, gin.H{"data": members, "total": len(members)})
+}
+
+// createPost 发布帖子（需正式用户；content 必填，title 服务端生成）
 func (a *API) createPost(c *gin.Context) {
 	userID, ok := middleware.GetUserID(c)
 	if !ok {
@@ -153,23 +228,35 @@ func (a *API) createPost(c *gin.Context) {
 		return
 	}
 
-	var req model.CreatePostRequest
+	var req model.CreatePostPayload
 	if err := c.ShouldBindJSON(&req); err != nil {
 		JSONError(c, http.StatusBadRequest, "invalid json body")
 		return
 	}
-	post := req.MatchPost
-	normalizePostPeople(&post)
-	if err := validatePost(post); err != nil {
+	if err := validateCreatePayload(req); err != nil {
 		JSONError(c, http.StatusBadRequest, err.Error())
 		return
 	}
-	if post.LastActiveTime.IsZero() {
-		post.LastActiveTime = time.Now().UTC()
+
+	user, err := a.users.GetUserByID(userID)
+	if err != nil {
+		log.Printf("create post load user %s: %v", userID, err)
+		JSONError(c, http.StatusInternalServerError, "failed to load user")
+		return
 	}
+	hostName := strings.TrimSpace(user.Username)
+	if hostName == "" {
+		hostName = "用户"
+	}
+
+	postID := fmt.Sprintf("post_%d", time.Now().UnixMilli())
+	post := buildPostFromPayload(req, hostName, postID)
+	post.HostUserID = userID
+	normalizePostPeople(&post)
+
 	if err := a.db.UpsertPost(c.Request.Context(), post); err != nil {
 		log.Printf("create post user=%s: %v", userID, err)
-		JSONError(c, http.StatusInternalServerError, "failed to save post")
+		JSONError(c, http.StatusInternalServerError, "failed to save post: "+err.Error())
 		return
 	}
 	c.JSON(http.StatusCreated, gin.H{

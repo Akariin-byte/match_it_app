@@ -4,8 +4,13 @@ import 'package:characters/characters.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../constants/scene_categories.dart';
 import '../services/auth_service.dart';
 import '../services/post_service.dart';
+import '../constants/user_hashtags.dart';
+import '../widgets/login_bottom_sheet.dart';
+import '../widgets/scene_picker_sheet.dart';
+import '../widgets/hashtag_chip.dart';
 
 /// 组队费用规则（与后端 cost_type / amount 对齐）
 class CostRule {
@@ -49,37 +54,46 @@ class CostRule {
 /// 发布页底部已选信息（地点 / 时间 / 费用 / 人数）
 class SelectedInfo {
   const SelectedInfo({
+    this.sceneId,
     this.location,
     this.time,
     this.costRule,
     this.maxPeople,
   });
 
+  final String? sceneId;
   final String? location;
   final DateTime? time;
   final CostRule? costRule;
   final int? maxPeople;
 
   bool get hasAny =>
+      (sceneId?.isNotEmpty ?? false) ||
       (location?.isNotEmpty ?? false) ||
       time != null ||
       costRule != null ||
       maxPeople != null;
 
+  String? get sceneLabel =>
+      sceneId != null ? SceneCategories.labelFor(sceneId) : null;
+
   String? get maxPeopleLabel =>
       maxPeople != null ? '👥 $maxPeople 人' : null;
 
   SelectedInfo copyWith({
+    String? sceneId,
     String? location,
     DateTime? time,
     CostRule? costRule,
     int? maxPeople,
+    bool clearScene = false,
     bool clearLocation = false,
     bool clearTime = false,
     bool clearCost = false,
     bool clearMaxPeople = false,
   }) {
     return SelectedInfo(
+      sceneId: clearScene ? null : (sceneId ?? this.sceneId),
       location: clearLocation ? null : (location ?? this.location),
       time: clearTime ? null : (time ?? this.time),
       costRule: clearCost ? null : (costRule ?? this.costRule),
@@ -93,14 +107,14 @@ class PublishPage extends StatefulWidget {
   const PublishPage({
     super.key,
     required this.hostName,
-    required this.defaultArea,
+    required this.suggestedSceneId,
     required this.hostFaceTraits,
     required this.intensityScore,
     this.authSession,
   });
 
   final String hostName;
-  final String defaultArea;
+  final String suggestedSceneId;
   final List<String> hostFaceTraits;
   final int intensityScore;
   final AuthSession? authSession;
@@ -124,6 +138,7 @@ class _PublishPageState extends State<PublishPage> {
   final List<Uint8List> _images = [];
   SelectedInfo _selectedInfo = const SelectedInfo();
   bool _isSubmitting = false;
+  AuthSession? _authSession;
 
   static const _locationPresets = [
     '线上',
@@ -134,6 +149,9 @@ class _PublishPageState extends State<PublishPage> {
   ];
 
   int get _charCount => _contentController.text.characters.length;
+
+  List<String> get _contentHashtags =>
+      UserHashtags.parseFromText(_contentController.text);
 
   bool get _canPost {
     final text = _contentController.text.trim();
@@ -150,7 +168,12 @@ class _PublishPageState extends State<PublishPage> {
   @override
   void initState() {
     super.initState();
+    _authSession = widget.authSession;
     _contentController.addListener(() => setState(() {}));
+    final suggested = widget.suggestedSceneId.trim();
+    if (suggested.isNotEmpty && suggested != SceneCategories.allId) {
+      _selectedInfo = SelectedInfo(sceneId: suggested);
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) _focusNode.requestFocus();
     });
@@ -429,6 +452,23 @@ class _PublishPageState extends State<PublishPage> {
     setState(() => _selectedInfo = _selectedInfo.copyWith(clearMaxPeople: true));
   }
 
+  void _clearScene() {
+    setState(() => _selectedInfo = _selectedInfo.copyWith(clearScene: true));
+  }
+
+  Future<void> _openSceneSheet() async {
+    final picked = await ScenePickerSheet.show(
+      context,
+      selectedId: _selectedInfo.sceneId,
+      includeAll: false,
+      title: '🏷 组局类型',
+      subtitle: '选择这条帖子属于哪种局（必填）',
+    );
+    if (picked != null && picked != SceneCategories.allId && mounted) {
+      setState(() => _selectedInfo = _selectedInfo.copyWith(sceneId: picked));
+    }
+  }
+
   Future<void> _openPeopleSheet() async {
     final result = await showModalBottomSheet<int>(
       context: context,
@@ -446,29 +486,40 @@ class _PublishPageState extends State<PublishPage> {
     }
   }
 
-  (String title, String description) _parseContent() {
-    final raw = _contentController.text.trim();
-    if (raw.isEmpty) return ('', '');
-    final lines = raw.split('\n');
-    final title = lines.first.trim();
-    final desc = lines.length > 1
-        ? lines.sublist(1).join('\n').trim()
-        : title;
-    return (title, desc.isEmpty ? title : desc);
+  Future<void> _openLoginSheet() async {
+    await LoginBottomSheet.show(
+      context,
+      initialSession: _authSession,
+      onLoginSuccess: (session) {
+        if (!mounted) return;
+        setState(() => _authSession = session);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('登录成功${session.phone != null ? '，已绑定 ${session.phone}' : ''}'),
+          ),
+        );
+      },
+    );
   }
 
   Future<void> _submit() async {
     if (!_canPost) return;
 
-    final session = widget.authSession;
+    final session = _authSession;
     if (session == null || session.isGuest) {
       _toast('请先登录后再发布');
       return;
     }
 
-    final (title, description) = _parseContent();
-    if (title.isEmpty) {
+    final content = _contentController.text.trim();
+    if (content.isEmpty) {
       _toast('写点内容再发布吧');
+      return;
+    }
+
+    final sceneId = _selectedInfo.sceneId?.trim();
+    if (sceneId == null || sceneId.isEmpty) {
+      _toast('请选择组局类型');
       return;
     }
 
@@ -478,36 +529,24 @@ class _PublishPageState extends State<PublishPage> {
       final eventTime =
           (_selectedInfo.time ?? now.add(const Duration(days: 1))).toUtc();
       final location = _selectedInfo.location?.trim() ?? '';
-      final descWithMeta = description;
-
-      final id = 'post_${DateTime.now().millisecondsSinceEpoch}';
-      final area = widget.defaultArea.trim().isEmpty
-          ? 'BoardGames'
-          : widget.defaultArea;
       final maxPeople = _selectedInfo.maxPeople ?? 4;
 
+      final contentTags = UserHashtags.parseFromText(content);
+      final tags = UserHashtags.normalizeAll([
+        ...contentTags,
+        ...widget.hostFaceTraits,
+        if (contentTags.isEmpty) SceneCategories.labelFor(sceneId),
+      ]);
+
       final payload = <String, dynamic>{
-          'id': id,
-          'title': title.length > 80 ? title.substring(0, 80) : title,
-          'description': descWithMeta,
-          'currentMembers': 1,
-          'maxMembers': maxPeople,
-          'maxPeople': maxPeople,
-          'area': area,
-          'tab': '推荐',
-          'hardcoreScore': widget.intensityScore,
-          'hostFaceTraits':
-              widget.hostFaceTraits.isEmpty ? ['平衡型'] : widget.hostFaceTraits,
-          'interactionCount': 0,
-          'lastActiveTime': now.toIso8601String(),
-          'matchScore': 0,
-          'hostNickname': widget.hostName,
-          'hostCreditScore': 80,
-          'eventDateTime': eventTime.toIso8601String(),
-          'eventLocation': location,
-          'isPinned': false,
-          'pinPriority': 0,
-        };
+        'content': content,
+        'area': sceneId,
+        'maxPeople': maxPeople,
+        'tags': tags,
+        'hardcoreScore': widget.intensityScore,
+        'eventDateTime': eventTime.toIso8601String(),
+        if (location.isNotEmpty) 'eventLocation': location,
+      };
       final costRule = _selectedInfo.costRule;
       if (costRule != null) {
         payload.addAll(costRule.toApiFields());
@@ -519,13 +558,36 @@ class _PublishPageState extends State<PublishPage> {
       );
 
       if (!mounted) return;
-      Navigator.of(context).pop(true);
+      Navigator.of(context).pop(sceneId);
     } on AuthException catch (e) {
       if (!mounted) return;
-      _toast(e.message);
+      if (e.action == 'bind_phone') {
+        final goLogin = await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('登录后发布'),
+            content: Text(e.message),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('去登录'),
+              ),
+            ],
+          ),
+        );
+        if (goLogin == true && mounted) {
+          await _openLoginSheet();
+        }
+      } else {
+        _toast(e.message);
+      }
     } catch (e) {
       if (!mounted) return;
-      _toast('发布失败，请确认 API 已启动且已登录');
+      _toast('发布失败：$e');
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -646,7 +708,7 @@ class _PublishPageState extends State<PublishPage> {
                                 enabledBorder: InputBorder.none,
                                 focusedBorder: InputBorder.none,
                                 counterText: '',
-                                hintText: '分享你的搭子计划…',
+                                hintText: '分享你的搭子计划… 正文里写 #桌游 可打标签',
                                 hintStyle: TextStyle(
                                   color: PublishPage._hint,
                                   fontSize: 17,
@@ -659,6 +721,16 @@ class _PublishPageState extends State<PublishPage> {
                           ),
                         ],
                       ),
+                      if (_contentHashtags.isNotEmpty) ...[
+                        const SizedBox(height: 10),
+                        Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
+                          children: _contentHashtags
+                              .map((t) => HashtagChip(tag: t, compact: true))
+                              .toList(),
+                        ),
+                      ],
                       if (_images.isNotEmpty ||
                           _images.length < PublishPage._maxImages) ...[
                         const SizedBox(height: 16),
@@ -668,16 +740,23 @@ class _PublishPageState extends State<PublishPage> {
                           onRemove: _removeImage,
                         ),
                       ],
-                      if (_selectedInfo.maxPeople != null) ...[
+                      if (_selectedInfo.sceneId != null ||
+                          _selectedInfo.maxPeople != null) ...[
                         const SizedBox(height: 12),
                         Wrap(
                           spacing: 8,
                           runSpacing: 8,
                           children: [
-                            _ContentMetaChip(
-                              label: _selectedInfo.maxPeopleLabel!,
-                              onTap: _openPeopleSheet,
-                            ),
+                            if (_selectedInfo.sceneLabel != null)
+                              _ContentMetaChip(
+                                label: '🏷 ${_selectedInfo.sceneLabel!}',
+                                onTap: _openSceneSheet,
+                              ),
+                            if (_selectedInfo.maxPeople != null)
+                              _ContentMetaChip(
+                                label: _selectedInfo.maxPeopleLabel!,
+                                onTap: _openPeopleSheet,
+                              ),
                           ],
                         ),
                       ],
@@ -727,10 +806,12 @@ class _PublishPageState extends State<PublishPage> {
               onPickTime: _openTimeSheet,
               onPickCost: _openCostSheet,
               onPickPeople: _openPeopleSheet,
+              onPickScene: _openSceneSheet,
               onClearLocation: _clearLocation,
               onClearTime: _clearTime,
               onClearCost: _clearCost,
               onClearMaxPeople: _clearMaxPeople,
+              onClearScene: _clearScene,
             ),
           ],
         ),
@@ -1077,10 +1158,12 @@ class _ComposeToolbar extends StatelessWidget {
     required this.onPickTime,
     required this.onPickCost,
     required this.onPickPeople,
+    required this.onPickScene,
     required this.onClearLocation,
     required this.onClearTime,
     required this.onClearCost,
     required this.onClearMaxPeople,
+    required this.onClearScene,
   });
 
   final int charCount;
@@ -1093,10 +1176,12 @@ class _ComposeToolbar extends StatelessWidget {
   final VoidCallback onPickTime;
   final VoidCallback onPickCost;
   final VoidCallback onPickPeople;
+  final VoidCallback onPickScene;
   final VoidCallback onClearLocation;
   final VoidCallback onClearTime;
   final VoidCallback onClearCost;
   final VoidCallback onClearMaxPeople;
+  final VoidCallback onClearScene;
 
   @override
   Widget build(BuildContext context) {
@@ -1131,6 +1216,12 @@ class _ComposeToolbar extends StatelessWidget {
                   icon: Icons.image_outlined,
                   onTap: onPickImage,
                   enabled: canAddImage,
+                ),
+                _DynamicActionCapsule(
+                  emoji: '🏷',
+                  label: selectedInfo.sceneLabel,
+                  onTap: onPickScene,
+                  onClear: onClearScene,
                 ),
                 _DynamicActionCapsule(
                   icon: Icons.place_outlined,

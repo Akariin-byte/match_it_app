@@ -51,6 +51,12 @@ func (a *API) GuestLogin(c *gin.Context) {
 	a.respondAuthTokens(c, user)
 }
 
+// WechatLogin POST /api/v1/auth/wechat-login — 小程序 wx.login code（M2 实现）
+func (a *API) WechatLogin(c *gin.Context) {
+	JSONErrorDetail(c, http.StatusNotImplemented, "wechat_login_not_configured",
+		"微信登录尚未配置，请使用手机号登录或游客模式", "")
+}
+
 // PhoneStatus 查询手机号是否已注册（已注册返回服务端昵称）
 func (a *API) PhoneStatus(c *gin.Context) {
 	var req model.PhoneStatusRequest

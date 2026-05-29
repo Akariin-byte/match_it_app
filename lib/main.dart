@@ -2,15 +2,25 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import 'models/match_post.dart';
+import 'models/post_member.dart';
 import 'services/auth_service.dart';
+import 'services/post_service.dart';
 import 'services/token_storage.dart';
 import 'services/vector_match_service.dart';
+import 'pages/app_bootstrap_page.dart';
+import 'services/push_service.dart';
+import 'pages/personalization_page.dart';
 import 'pages/publish_page.dart';
-import 'widgets/bottom_publish_bar.dart';
+import 'constants/scene_categories.dart';
+import 'constants/user_hashtags.dart';
+import 'widgets/hashtag_chip.dart';
 import 'widgets/login_bottom_sheet.dart';
-import 'widgets/phone_auth_form.dart';
+import 'widgets/scene_picker_sheet.dart';
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await PushService.init();
   _initVectorIndex();
   runApp(const MatchItApp());
 }
@@ -43,7 +53,7 @@ class UserProfile {
   final bool isHardcore;
   final int intensityScore;
   final String intensityLabel;
-  /// 用户捏脸特征标签（mock）
+  /// 用户 # 个性标签（匹配向量仍用 faceTraits 字段名对接后端）
   final List<String> faceTraits;
   /// 用户唯一 id（Redis 缓存 key、pgvector 查询用）
   final String userId;
@@ -51,6 +61,47 @@ class UserProfile {
   final Set<String> blockedPostIds;
   /// 用户已读帖子 id（预留，推荐流可据此降权或隐藏）
   final Set<String> readPostIds;
+
+  factory UserProfile.guestDefault({
+    required String userId,
+    required String name,
+  }) {
+    const sceneId = 'BoardGames';
+    const score = 50;
+    return UserProfile(
+      name: name.trim().isEmpty ? '游客' : name.trim(),
+      area: sceneId,
+      isHardcore: false,
+      intensityScore: score,
+      intensityLabel: '普通',
+      faceTraits: UserHashtags.defaultsFor(sceneId, score),
+      userId: userId,
+    );
+  }
+
+  UserProfile copyWith({
+    String? name,
+    String? area,
+    bool? isHardcore,
+    int? intensityScore,
+    String? intensityLabel,
+    List<String>? faceTraits,
+    String? userId,
+    Set<String>? blockedPostIds,
+    Set<String>? readPostIds,
+  }) {
+    return UserProfile(
+      name: name ?? this.name,
+      area: area ?? this.area,
+      isHardcore: isHardcore ?? this.isHardcore,
+      intensityScore: intensityScore ?? this.intensityScore,
+      intensityLabel: intensityLabel ?? this.intensityLabel,
+      faceTraits: faceTraits ?? this.faceTraits,
+      userId: userId ?? this.userId,
+      blockedPostIds: blockedPostIds ?? this.blockedPostIds,
+      readPostIds: readPostIds ?? this.readPostIds,
+    );
+  }
 }
 
 class MatchItApp extends StatelessWidget {
@@ -94,171 +145,7 @@ class MatchItApp extends StatelessWidget {
           ),
         ),
       ),
-      home: const MatchItLoginPage(),
-    );
-  }
-}
-
-/// 登录页：小红书式「先体验、后绑定」
-/// - 先逛逛 / Continue → guest-login
-/// - Continue with Phone → guest-login + bind-phone
-class MatchItLoginPage extends StatefulWidget {
-  const MatchItLoginPage({super.key});
-
-  @override
-  State<MatchItLoginPage> createState() => _MatchItLoginPageState();
-}
-
-class _MatchItLoginPageState extends State<MatchItLoginPage> {
-  String? _selectedArea;
-  bool _isLoading = false;
-
-  /// 「先逛逛，暂不登录」→ 仅游客，不绑手机
-  Future<void> _enterAsGuest() async {
-    setState(() => _isLoading = true);
-    try {
-      final session = await authService.guestLogin();
-      await _openAreaSelection(session.displayName, session);
-    } on AuthException catch (e) {
-      if (!mounted) return;
-      _showAuthError('游客登录失败', e.message);
-    } catch (e) {
-      if (!mounted) return;
-      _showAuthError('无法连接后端', '请确认 API 已启动：http://localhost:8080');
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  Future<void> _onPhoneAuthSuccess(AuthSession session) async {
-    await tokenStorage.saveSession(session);
-    if (!mounted) return;
-    await _openAreaSelection(session.displayName, session);
-  }
-
-  /// 携带 AuthSession 进入兴趣区域选择页
-  Future<void> _openAreaSelection(String name, AuthSession session) async {
-    final selectedArea = await Navigator.of(context).push<String>(
-      MaterialPageRoute<String>(
-        builder: (_) => AreaSelectionPage(
-          name: name,
-          authSession: session,
-        ),
-      ),
-    );
-
-    if (selectedArea != null && mounted) {
-      setState(() => _selectedArea = selectedArea);
-    }
-  }
-
-  void _showAuthError(String title, String message) {
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: Text(message),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('知道了'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final blue = const Color(0xFF002FA7);
-    final cardShadow = [
-      BoxShadow(
-        color: Colors.black.withValues(alpha: 0.05),
-        blurRadius: 20,
-        offset: const Offset(0, 10),
-      ),
-    ];
-
-    return Scaffold(
-      body: Stack(
-        children: [
-          SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '手机号登录 / 注册',
-                style: theme.textTheme.headlineLarge,
-                textAlign: TextAlign.left,
-              ),
-              const SizedBox(height: 12),
-              if (_selectedArea != null) ...[
-                Text(
-                  'Last selected area: ${_selectedArea!.toUpperCase()}',
-                  style: theme.textTheme.titleLarge?.copyWith(
-                    color: blue,
-                  ),
-                ),
-                const SizedBox(height: 12),
-              ],
-              Text(
-                '输入手机号后自动识别：已注册拉取昵称登录，未注册可填昵称（选填）。',
-                style: theme.textTheme.bodyLarge,
-              ),
-              const SizedBox(height: 24),
-              Container(
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(24),
-                  boxShadow: cardShadow,
-                ),
-                padding: const EdgeInsets.all(24),
-                child: PhoneAuthForm(
-                  onSuccess: _onPhoneAuthSuccess,
-                ),
-              ),
-              const SizedBox(height: 16),
-              Center(
-                child: TextButton(
-                  onPressed: _isLoading ? null : _enterAsGuest,
-                  child: const Text(
-                    '先逛逛，暂不登录',
-                    style: TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w600,
-                      color: Color(0xFF002FA7),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-          if (_isLoading)
-            Container(
-              color: Colors.black26,
-              alignment: Alignment.center,
-              child: const Card(
-                child: Padding(
-                  padding: EdgeInsets.all(24),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      CircularProgressIndicator(),
-                      SizedBox(height: 12),
-                      Text('正在连接服务器…'),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-        ],
-      ),
+      home: const AppBootstrapPage(),
     );
   }
 }
@@ -368,23 +255,9 @@ class _ScaleTapButtonState extends State<ScaleTapButton> {
   }
 }
 
-/// 根据分类与强度档位 mock 用户捏脸特征
-List<String> mockUserFaceTraits(String area, int intensityScore) {
-  final base = switch (area) {
-    'BoardGames' => ['策略思维', '桌游爱好者', '逻辑型'],
-    'Food' => ['美食探索', '社交型', '慢节奏'],
-    'Sport' => ['运动达人', '活力型', '竞争意识'],
-    _ => ['开放', '随和'],
-  };
-  final style = switch (intensityScore) {
-    0 || 25 => '休闲派',
-    50 => '平衡型',
-    75 => '认真派',
-    100 => '硬核派',
-    _ => '平衡型',
-  };
-  return [...base, style];
-}
+/// 用户 # 标签默认值（兼容旧 mockUserFaceTraits 调用）
+List<String> mockUserFaceTraits(String area, int intensityScore) =>
+    UserHashtags.defaultsFor(area, intensityScore);
 
 /// 捏脸特征匹配分（0–100），基于标签 Jaccard 相似度
 int computeFaceMatchScore(List<String> userTraits, List<String> hostTraits) {
@@ -394,65 +267,6 @@ int computeFaceMatchScore(List<String> userTraits, List<String> hostTraits) {
   final intersection = userSet.intersection(hostSet).length;
   final union = userSet.union(hostSet).length;
   return ((intersection / union) * 100).round();
-}
-
-class MatchPost {
-  const MatchPost({
-    required this.id,
-    required this.title,
-    required this.description,
-    required this.currentMembers,
-    required this.maxMembers,
-    this.maxPeople,
-    required this.area,
-    required this.tab,
-    required this.hardcoreScore,
-    required this.hostFaceTraits,
-    required this.interactionCount,
-    required this.lastActiveTime,
-    required this.matchScore,
-    required this.hostNickname,
-    required this.hostCreditScore,
-    required this.eventDateTime,
-    required this.eventLocation,
-    this.isPinned = false,
-    this.pinPriority = 0,
-  });
-
-  final String id;
-  final String title;
-  final String description;
-  final int currentMembers;
-  final int maxMembers;
-  /// 招募人数上限（与 maxMembers 一致，发布页 maxPeople 对接）
-  final int? maxPeople;
-  final String area;
-  final String tab;
-  final int hardcoreScore;
-  /// 发帖人捏脸特征（mock，用于实时计算 matchScore）
-  final List<String> hostFaceTraits;
-  /// 互动数（点赞 + 评论 + 申请等）
-  final int interactionCount;
-  /// 最后活跃 / 发布时间，用于新鲜度衰减
-  final DateTime lastActiveTime;
-  /// 捏脸匹配分值 0–100（mock 缓存值；推荐流内会按当前用户重新计算）
-  final double matchScore;
-  /// 发布者昵称
-  final String hostNickname;
-  /// 发布者信用分 0–100
-  final int hostCreditScore;
-  /// 活动日期时间
-  final DateTime eventDateTime;
-  /// 活动地点
-  final String eventLocation;
-  /// 官方 / 管理员置顶
-  final bool isPinned;
-  /// 置顶优先级，越大越靠前
-  final int pinPriority;
-
-  bool get isFull => currentMembers >= maxMembers;
-
-  int get peopleLimit => maxPeople ?? maxMembers;
 }
 
 final List<MatchPost> mockPosts = [
@@ -465,7 +279,7 @@ final List<MatchPost> mockPosts = [
     area: 'BoardGames',
     tab: '推荐',
     hardcoreScore: 55,
-    hostFaceTraits: ['策略思维', '桌游爱好者', '社交型', '平衡型'],
+    hostFaceTraits: ['桌游', '组局', '官方活动', '氛围轻松'],
     interactionCount: 890,
     lastActiveTime: DateTime.now().subtract(const Duration(hours: 1)),
     matchScore: 78,
@@ -485,7 +299,7 @@ final List<MatchPost> mockPosts = [
     area: 'BoardGames',
     tab: '推荐',
     hardcoreScore: 95,
-    hostFaceTraits: ['策略思维', '硬核派', '逻辑型', '竞争意识'],
+    hostFaceTraits: ['桌游', '阿瓦隆', '硬核局', '认真局'],
     interactionCount: 420,
     lastActiveTime: DateTime.now().subtract(const Duration(hours: 6)),
     matchScore: 40,
@@ -503,7 +317,7 @@ final List<MatchPost> mockPosts = [
     area: 'BoardGames',
     tab: '桌游',
     hardcoreScore: 55,
-    hostFaceTraits: ['策略思维', '桌游爱好者', '平衡型', '团队配合'],
+    hostFaceTraits: ['桌游', '卡坦', '进阶', '氛围轻松'],
     interactionCount: 256,
     lastActiveTime: DateTime.now().subtract(const Duration(hours: 12)),
     matchScore: 60,
@@ -521,7 +335,7 @@ final List<MatchPost> mockPosts = [
     area: 'BoardGames',
     tab: '桌游',
     hardcoreScore: 20,
-    hostFaceTraits: ['桌游爱好者', '休闲派', '社交型', '慢节奏'],
+    hostFaceTraits: ['桌游', '卡坦', '新手友好', '同城'],
     interactionCount: 98,
     lastActiveTime: DateTime.now().subtract(const Duration(days: 3)),
     matchScore: 20,
@@ -539,7 +353,7 @@ final List<MatchPost> mockPosts = [
     area: 'Food',
     tab: '附近',
     hardcoreScore: 30,
-    hostFaceTraits: ['美食探索', '社交型', '慢节奏', '拍照打卡'],
+    hostFaceTraits: ['探店', '美食', '拼餐', '氛围轻松'],
     interactionCount: 180,
     lastActiveTime: DateTime.now().subtract(const Duration(hours: 20)),
     matchScore: 35,
@@ -557,7 +371,7 @@ final List<MatchPost> mockPosts = [
     area: 'Sport',
     tab: '附近',
     hardcoreScore: 40,
-    hostFaceTraits: ['运动达人', '活力型', '竞争意识', '早起党'],
+    hostFaceTraits: ['篮球', '运动', '3v3', '周末局'],
     interactionCount: 310,
     lastActiveTime: DateTime.now().subtract(const Duration(days: 1)),
     matchScore: 25,
@@ -565,6 +379,312 @@ final List<MatchPost> mockPosts = [
     hostCreditScore: 88,
     eventDateTime: DateTime.now().add(const Duration(days: 5, hours: 8)),
     eventLocation: '上海市浦东新区张江社区篮球场',
+  ),
+  MatchPost(
+    id: 'board_4',
+    title: '#狼人杀 缺4人',
+    description: '今晚 8 点开局，有法官，新手可带，氛围欢乐不贴脸。',
+    currentMembers: 4,
+    maxMembers: 8,
+    area: 'BoardGames',
+    tab: '桌游',
+    hardcoreScore: 35,
+    hostFaceTraits: ['狼人杀', '桌游', '欢乐局', '周末夜'],
+    interactionCount: 512,
+    lastActiveTime: DateTime.now().subtract(const Duration(minutes: 45)),
+    matchScore: 72,
+    hostNickname: '法官小姐姐',
+    hostCreditScore: 91,
+    eventDateTime: DateTime.now().add(const Duration(hours: 6)),
+    eventLocation: '上海市杨浦区大学路剧本杀馆',
+  ),
+  MatchPost(
+    id: 'board_5',
+    title: '剧本杀《年轮》拼车 · 差2女',
+    description: '情感本，6人本，已有4人，希望不跳车、能沉浸。',
+    currentMembers: 4,
+    maxMembers: 6,
+    area: 'BoardGames',
+    tab: '推荐',
+    hardcoreScore: 60,
+    hostFaceTraits: ['剧本杀', '情感本', '沉浸', '桌游'],
+    interactionCount: 367,
+    lastActiveTime: DateTime.now().subtract(const Duration(hours: 3)),
+    matchScore: 55,
+    hostNickname: '剧本杀队长',
+    hostCreditScore: 89,
+    eventDateTime: DateTime.now().add(const Duration(days: 1, hours: 19)),
+    eventLocation: '上海市虹口区四川北路',
+  ),
+  MatchPost(
+    id: 'board_6',
+    title: '《血染钟楼》入门局欢迎萌新',
+    description: '主持人带规则，预计 2.5 小时，结束后可一起夜宵。',
+    currentMembers: 6,
+    maxMembers: 10,
+    area: 'BoardGames',
+    tab: '桌游',
+    hardcoreScore: 25,
+    hostFaceTraits: ['血染钟楼', '新手友好', '桌游', '夜宵局'],
+    interactionCount: 143,
+    lastActiveTime: DateTime.now().subtract(const Duration(hours: 8)),
+    matchScore: 48,
+    hostNickname: '钟楼守夜人',
+    hostCreditScore: 82,
+    eventDateTime: DateTime.now().add(const Duration(days: 2, hours: 20)),
+    eventLocation: '上海市闵行区莘庄商圈',
+  ),
+  MatchPost(
+    id: 'anime_1',
+    title: 'CP30 漫展同行 · 约妆造互拍',
+    description: '周六全天，已有门票，求同坑 coser 一起逛展打卡。',
+    currentMembers: 2,
+    maxMembers: 4,
+    area: 'AnimeCon',
+    tab: '推荐',
+    hardcoreScore: 40,
+    hostFaceTraits: ['漫展', 'cos', '摄影', '互拍'],
+    interactionCount: 628,
+    lastActiveTime: DateTime.now().subtract(const Duration(hours: 2)),
+    matchScore: 65,
+    hostNickname: '二刺猿日常',
+    hostCreditScore: 87,
+    eventDateTime: DateTime.now().add(const Duration(days: 6, hours: 9)),
+    eventLocation: '杭州市萧山区国际博览中心',
+  ),
+  MatchPost(
+    id: 'photo_1',
+    title: '外滩夜景人像约拍',
+    description: '自带灯棒，返 9 张精修，希望模特有街拍经验。',
+    currentMembers: 1,
+    maxMembers: 2,
+    area: 'Photo',
+    tab: '附近',
+    hardcoreScore: 50,
+    hostFaceTraits: ['摄影', '人像', '夜景', '外滩'],
+    interactionCount: 201,
+    lastActiveTime: DateTime.now().subtract(const Duration(hours: 14)),
+    matchScore: 42,
+    hostNickname: '快门猎人',
+    hostCreditScore: 93,
+    eventDateTime: DateTime.now().add(const Duration(days: 1, hours: 18)),
+    eventLocation: '上海市黄浦区中山东一路',
+  ),
+  MatchPost(
+    id: 'game_1',
+    title: '王者五排缺辅助 · 星耀局',
+    description: '语音开黑，不喷人，能保射手，晚上 9 点后在线。',
+    currentMembers: 4,
+    maxMembers: 5,
+    area: 'Game',
+    tab: '匹配',
+    hardcoreScore: 70,
+    hostFaceTraits: ['王者荣耀', '开黑', '星耀', '语音局'],
+    interactionCount: 445,
+    lastActiveTime: DateTime.now().subtract(const Duration(minutes: 20)),
+    matchScore: 58,
+    hostNickname: '野王请带飞',
+    hostCreditScore: 85,
+    eventDateTime: DateTime.now().add(const Duration(hours: 4)),
+    eventLocation: '线上 · 微信语音',
+  ),
+  MatchPost(
+    id: 'game_2',
+    title: '黑神话联机 Boss 互助',
+    description: '卡关求大佬，也可一起探索隐藏，PC 端 Steam。',
+    currentMembers: 2,
+    maxMembers: 4,
+    area: 'Game',
+    tab: '推荐',
+    hardcoreScore: 55,
+    hostFaceTraits: ['黑神话', 'Steam', '联机', '互助'],
+    interactionCount: 892,
+    lastActiveTime: DateTime.now().subtract(const Duration(hours: 1)),
+    matchScore: 38,
+    hostNickname: '悟空残影',
+    hostCreditScore: 90,
+    eventDateTime: DateTime.now().add(const Duration(hours: 3)),
+    eventLocation: '线上 · Discord',
+  ),
+  MatchPost(
+    id: 'travel_1',
+    title: '清明小长假安吉露营 · 差2人拼车',
+    description: '自驾上海出发，帐篷可租，会做饭优先，AA 制。',
+    currentMembers: 4,
+    maxMembers: 6,
+    area: 'Travel',
+    tab: '附近',
+    hardcoreScore: 35,
+    hostFaceTraits: ['露营', '自驾', '户外', '拼车'],
+    interactionCount: 278,
+    lastActiveTime: DateTime.now().subtract(const Duration(hours: 5)),
+    matchScore: 50,
+    hostNickname: '山野旅人',
+    hostCreditScore: 86,
+    eventDateTime: DateTime.now().add(const Duration(days: 10, hours: 7)),
+    eventLocation: '浙江省湖州市安吉县',
+  ),
+  MatchPost(
+    id: 'study_1',
+    title: '图书馆自习搭子 · 考研冲刺',
+    description: '复旦附近，每天 9–18 点，互相监督不看手机。',
+    currentMembers: 3,
+    maxMembers: 6,
+    area: 'Study',
+    tab: '推荐',
+    hardcoreScore: 80,
+    hostFaceTraits: ['自习', '考研', '监督', '安静'],
+    interactionCount: 156,
+    lastActiveTime: DateTime.now().subtract(const Duration(hours: 10)),
+    matchScore: 33,
+    hostNickname: '早起刷题人',
+    hostCreditScore: 88,
+    eventDateTime: DateTime.now().add(const Duration(days: 1, hours: 9)),
+    eventLocation: '上海市杨浦区复旦大学周边',
+  ),
+  MatchPost(
+    id: 'pet_1',
+    title: '周末遛狗局 · 大型犬友好',
+    description: '世纪公园晨遛，家有金毛，求同好交流喂养心得。',
+    currentMembers: 5,
+    maxMembers: 8,
+    area: 'Pet',
+    tab: '附近',
+    hardcoreScore: 15,
+    hostFaceTraits: ['宠物', '遛狗', '金毛', '周末晨'],
+    interactionCount: 124,
+    lastActiveTime: DateTime.now().subtract(const Duration(days: 2)),
+    matchScore: 28,
+    hostNickname: '毛孩子家长',
+    hostCreditScore: 81,
+    eventDateTime: DateTime.now().add(const Duration(days: 3, hours: 7)),
+    eventLocation: '上海市浦东新区世纪公园',
+  ),
+  MatchPost(
+    id: 'music_1',
+    title: 'Livehouse 拼票 · 独立乐队场',
+    description: '本周五演出，多一张票，一起拼车往返静安。',
+    currentMembers: 1,
+    maxMembers: 2,
+    area: 'Music',
+    tab: '推荐',
+    hardcoreScore: 30,
+    hostFaceTraits: ['livehouse', '独立音乐', '拼票', '周五夜'],
+    interactionCount: 233,
+    lastActiveTime: DateTime.now().subtract(const Duration(hours: 7)),
+    matchScore: 45,
+    hostNickname: '耳机不离身',
+    hostCreditScore: 83,
+    eventDateTime: DateTime.now().add(const Duration(days: 4, hours: 20)),
+    eventLocation: '上海市静安区 MAO Livehouse',
+  ),
+  MatchPost(
+    id: 'outdoor_1',
+    title: '周六徒步九溪 · 休闲线',
+    description: '约 12km，中等强度，自带水和干粮，下雨顺延。',
+    currentMembers: 7,
+    maxMembers: 12,
+    area: 'Outdoor',
+    tab: '附近',
+    hardcoreScore: 45,
+    hostFaceTraits: ['徒步', '户外', '九溪', '周末'],
+    interactionCount: 389,
+    lastActiveTime: DateTime.now().subtract(const Duration(hours: 4)),
+    matchScore: 52,
+    hostNickname: '山系青年',
+    hostCreditScore: 87,
+    eventDateTime: DateTime.now().add(const Duration(days: 5, hours: 8)),
+    eventLocation: '杭州市西湖区九溪烟树入口',
+  ),
+  MatchPost(
+    id: 'drive_1',
+    title: '虹桥机场接机拼车 · 今晚 22:30',
+    description: '航班 MU5101，可拼 2 人，行李不多的来。',
+    currentMembers: 1,
+    maxMembers: 3,
+    area: 'Drive',
+    tab: '附近',
+    hardcoreScore: 20,
+    hostFaceTraits: ['拼车', '接机', '虹桥', '今晚'],
+    interactionCount: 67,
+    lastActiveTime: DateTime.now().subtract(const Duration(minutes: 12)),
+    matchScore: 22,
+    hostNickname: '顺风车老司机',
+    hostCreditScore: 79,
+    eventDateTime: DateTime.now().add(const Duration(hours: 8)),
+    eventLocation: '上海虹桥国际机场 T2',
+  ),
+  MatchPost(
+    id: 'food_2',
+    title: '深夜火锅局 · 缺2人',
+    description: '重庆牛油锅底，能吃辣的来，人均约 120。',
+    currentMembers: 4,
+    maxMembers: 6,
+    area: 'Food',
+    tab: '推荐',
+    hardcoreScore: 25,
+    hostFaceTraits: ['火锅', '夜宵', '辣', '拼桌'],
+    interactionCount: 334,
+    lastActiveTime: DateTime.now().subtract(const Duration(hours: 2)),
+    matchScore: 61,
+    hostNickname: '无辣不欢',
+    hostCreditScore: 84,
+    eventDateTime: DateTime.now().add(const Duration(hours: 5)),
+    eventLocation: '上海市长宁区中山公园龙之梦附近',
+  ),
+  MatchPost(
+    id: 'sport_2',
+    title: '羽毛球双打 · 中级水平',
+    description: '静安体育馆订场 2 小时，自带拍，求固定搭子。',
+    currentMembers: 2,
+    maxMembers: 4,
+    area: 'Sport',
+    tab: '匹配',
+    hardcoreScore: 65,
+    hostFaceTraits: ['羽毛球', '双打', '运动', '中级'],
+    interactionCount: 198,
+    lastActiveTime: DateTime.now().subtract(const Duration(hours: 18)),
+    matchScore: 47,
+    hostNickname: '羽球小张',
+    hostCreditScore: 86,
+    eventDateTime: DateTime.now().add(const Duration(days: 2, hours: 14)),
+    eventLocation: '上海市静安区羽毛球馆',
+  ),
+  MatchPost(
+    id: 'sport_3',
+    title: '晨跑 5km · 徐汇滨江',
+    description: '配速 6 分左右，跑完一起喝咖啡，新手也可跟跑。',
+    currentMembers: 3,
+    maxMembers: 8,
+    area: 'Sport',
+    tab: '附近',
+    hardcoreScore: 30,
+    hostFaceTraits: ['跑步', '晨跑', '滨江', '咖啡局'],
+    interactionCount: 112,
+    lastActiveTime: DateTime.now().subtract(const Duration(hours: 22)),
+    matchScore: 36,
+    hostNickname: '早起跑者',
+    hostCreditScore: 80,
+    eventDateTime: DateTime.now().add(const Duration(days: 1, hours: 6)),
+    eventLocation: '上海市徐汇区徐汇滨江绿道',
+  ),
+  MatchPost(
+    id: 'other_1',
+    title: '同城读书会 · 《被讨厌的勇气》',
+    description: '线下分享 1 小时，限 8 人，需提前读完前三章。',
+    currentMembers: 6,
+    maxMembers: 8,
+    area: 'Other',
+    tab: '推荐',
+    hardcoreScore: 40,
+    hostFaceTraits: ['读书会', '心理学', '线下', '分享'],
+    interactionCount: 89,
+    lastActiveTime: DateTime.now().subtract(const Duration(days: 1)),
+    matchScore: 30,
+    hostNickname: '书虫阿宁',
+    hostCreditScore: 85,
+    eventDateTime: DateTime.now().add(const Duration(days: 7, hours: 15)),
+    eventLocation: '上海市黄浦区思南公馆附近咖啡馆',
   ),
 ];
 
@@ -599,41 +719,136 @@ class _RecommendSortBreakdown {
   final bool isPinned;
 }
 
-  /// 首页 Feed：展示推荐/匹配等 Tab；authSession 非空时显示游客/已绑定横幅
+  /// 首页 Feed：展示推荐/匹配等 Tab
 class MainFeedPage extends StatefulWidget {
   const MainFeedPage({
     super.key,
     required this.user,
     this.authSession,
+    this.isLoggedIn = false,
+    this.onUserProfileChanged,
+    this.onAuthChanged,
+    this.onRequestLogin,
+    this.onApplicationChanged,
   });
 
   final UserProfile user;
   final AuthSession? authSession;
+  final bool isLoggedIn;
+  final ValueChanged<UserProfile>? onUserProfileChanged;
+  final void Function(AuthSession? session, bool isLoggedIn)? onAuthChanged;
+  final Future<void> Function()? onRequestLogin;
+  final VoidCallback? onApplicationChanged;
 
   @override
-  State<MainFeedPage> createState() => _MainFeedPageState();
+  State<MainFeedPage> createState() => MainFeedPageState();
 }
 
-class _MainFeedPageState extends State<MainFeedPage>
+class MainFeedPageState extends State<MainFeedPage>
     with SingleTickerProviderStateMixin {
   late final TabController _tabController;
+  late UserProfile _userProfile;
+  late final TextEditingController _searchController;
+  late final FocusNode _searchFocus;
   String _searchText = '';
+  String _browseSceneId = SceneCategories.allId;
+  String? _lastPublishSceneId;
+  final Set<String> _appliedPostIds = {};
+  /// 已关注发布者（hostUserId 优先，否则 hostNickname）
+  final Set<String> _followedHostKeys = {};
   Map<String, double>? _vectorMatchScoreCache;
   AuthSession? _authSession;
+  bool _feedFromApi = false;
+  List<MatchPost> _apiPosts = const [];
+  bool _feedLoading = false;
   /// 是否处于「已登录/已绑定」UI 状态（退出后为 false，即使 device_id 对应正式账号）
   bool _isLoggedIn = false;
 
+  /// API 拉取成功后用库内帖子；否则回退 mock（离线/后端未启）
+  List<MatchPost> get _feedSource => _feedFromApi ? _apiPosts : mockPosts;
+
+  static const List<String> _intensityLabels = ['新手', '普通', '进阶', '硬核', '大神'];
+
   bool get _showsRegisteredUI =>
       _isLoggedIn && _authSession != null && !_authSession!.isGuest;
+
+  bool _postMatchesBrowse(MatchPost post) =>
+      SceneCategories.postAreaMatchesBrowse(post.area.trim(), _browseSceneId);
 
   @override
   void initState() {
     super.initState();
     _tabController = TabController(length: 4, vsync: this);
+    _searchController = TextEditingController();
+    _searchFocus = FocusNode();
+    _userProfile = widget.user;
     _authSession = widget.authSession;
-    _isLoggedIn =
-        widget.authSession != null && !widget.authSession!.isGuest;
-    _restoreSessionFromStorage();
+    _isLoggedIn = widget.isLoggedIn ||
+        (widget.authSession != null && !widget.authSession!.isGuest);
+    _mergeDefaultFollowedHosts(mockPosts);
+    _bootstrapFeed();
+  }
+
+  String _hostKey(MatchPost post) {
+    final id = post.hostUserId?.trim();
+    if (id != null && id.isNotEmpty) return id;
+    return post.hostNickname.trim().isEmpty ? post.id : post.hostNickname.trim();
+  }
+
+  void _mergeDefaultFollowedHosts(Iterable<MatchPost> posts) {
+    for (final post in posts) {
+      if (post.isPinned || post.hostNickname.contains('官方')) {
+        _followedHostKeys.add(_hostKey(post));
+      }
+    }
+  }
+
+  bool _isHostFollowed(MatchPost post) => _followedHostKeys.contains(_hostKey(post));
+
+  void _toggleFollowHost(MatchPost post) {
+    final key = _hostKey(post);
+    setState(() {
+      if (_followedHostKeys.contains(key)) {
+        _followedHostKeys.remove(key);
+      } else {
+        _followedHostKeys.add(key);
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    _searchFocus.dispose();
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  void updateUserProfile(UserProfile profile) {
+    setState(() => _userProfile = profile);
+    _invalidateVectorCache();
+  }
+
+  Future<void> openPublishPage() => _openPublishPage();
+
+  Future<void> logout() => _logout();
+
+  Future<void> reloadFeed() => _loadFeedPosts();
+
+  @override
+  void didUpdateWidget(MainFeedPage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.user != oldWidget.user) {
+      _userProfile = widget.user;
+      _invalidateVectorCache();
+    }
+    if (widget.authSession != oldWidget.authSession) {
+      _authSession = widget.authSession;
+      _loadFeedPosts();
+    }
+    if (widget.isLoggedIn != oldWidget.isLoggedIn) {
+      _isLoggedIn = widget.isLoggedIn;
+    }
   }
 
   /// 从本地 secure storage 恢复已绑定用户的 Token
@@ -647,20 +862,129 @@ class _MainFeedPageState extends State<MainFeedPage>
     });
   }
 
-  /// 打开登录/绑定 BottomSheet
+  Future<void> _bootstrapFeed() async {
+    await _restoreSessionFromStorage();
+    if (!mounted) return;
+    await _loadFeedPosts();
+  }
+
+  Future<AuthSession?> _sessionForApi() async {
+    if (_authSession != null) return _authSession;
+    return tokenStorage.loadSession();
+  }
+
+  Future<void> _loadFeedPosts() async {
+    final session = await _sessionForApi();
+    if (session == null || !mounted) return;
+
+    setState(() => _feedLoading = true);
+    try {
+      final tab = _currentTabLabel;
+      final tabParam = tab == '推荐' ? '' : tab;
+      final posts = await postService.listPosts(
+        session: session,
+        tab: tabParam,
+      );
+      if (!mounted) return;
+      setState(() {
+        _apiPosts = posts;
+        _feedFromApi = true;
+        _feedLoading = false;
+        _mergeDefaultFollowedHosts(posts);
+        _appliedPostIds
+          ..clear()
+          ..addAll(posts.where((p) => p.hasApplied).map((p) => p.id));
+      });
+      _reindexFeedVectors();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _feedFromApi = false;
+        _feedLoading = false;
+      });
+    }
+  }
+
+  void _reindexFeedVectors() {
+    vectorMatchService.indexPosts(
+      _feedSource.map((p) => (id: p.id, traits: p.hostFaceTraits)),
+    );
+    _invalidateVectorCache();
+  }
+
+  /// 打开登录/绑定 BottomSheet（由 Shell 托管时走 onRequestLogin）
   Future<void> _showLoginBottomSheet() async {
+    if (widget.onRequestLogin != null) {
+      await widget.onRequestLogin!();
+      return;
+    }
     await LoginBottomSheet.show(
       context,
       initialSession: _authSession,
-      onLoginSuccess: (session) {
-        setState(() {
-          _authSession = session;
-          _isLoggedIn = true;
-        });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('登录成功，已绑定 ${session.phone ?? ''}')),
-        );
-      },
+      onLoginSuccess: _onLoginSuccess,
+    );
+  }
+
+  void _onLoginSuccess(AuthSession session) {
+    setState(() {
+      _authSession = session;
+      _isLoggedIn = true;
+      _userProfile = _userProfile.copyWith(
+        name: session.displayName,
+        userId: session.userId,
+      );
+    });
+    widget.onAuthChanged?.call(session, true);
+    widget.onUserProfileChanged?.call(_userProfile);
+    _loadFeedPosts();
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('登录成功，已绑定 ${session.phone ?? ''}')),
+    );
+  }
+
+  /// 首页「我在看什么」场景筛选
+  Future<void> _openBrowseFilter() async {
+    final picked = await ScenePickerSheet.show(
+      context,
+      selectedId: _browseSceneId == SceneCategories.allId ? null : _browseSceneId,
+      includeAll: true,
+      title: '我在看什么',
+      subtitle: '筛选首页展示的组局类型，不影响发布时的分类选择',
+    );
+    if (picked != null && mounted) {
+      setState(() {
+        _browseSceneId = picked;
+        _invalidateVectorCache();
+      });
+      await _loadFeedPosts();
+    }
+  }
+
+  /// 个人中心 · 个性化定制（可选，游客也可进入）
+  Future<void> _openPersonalization() async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => PersonalizationPage(
+          initialIntensityScore: _userProfile.intensityScore,
+          initialPreferredSceneId: _userProfile.area,
+          initialHashtags: _userProfile.faceTraits,
+          onSave: (score, sceneId, hashtags) {
+            final labelIdx = [0, 25, 50, 75, 100].indexOf(score);
+            setState(() {
+              _userProfile = _userProfile.copyWith(
+                area: sceneId,
+                intensityScore: score,
+                intensityLabel:
+                    labelIdx >= 0 ? _intensityLabels[labelIdx] : '普通',
+                isHardcore: sceneId == 'BoardGames' && score >= 75,
+                faceTraits: UserHashtags.normalizeAll(hashtags),
+              );
+              _invalidateVectorCache();
+            });
+            widget.onUserProfileChanged?.call(_userProfile);
+          },
+        ),
+      ),
     );
   }
 
@@ -690,21 +1014,35 @@ class _MainFeedPageState extends State<MainFeedPage>
       return;
     }
 
-    final published = await Navigator.of(context).push<bool>(
-      MaterialPageRoute<bool>(
+    final suggestedScene = _lastPublishSceneId ??
+        (_browseSceneId != SceneCategories.allId
+            ? _browseSceneId
+            : _userProfile.area);
+
+    final publishedSceneId = await Navigator.of(context).push<String>(
+      MaterialPageRoute<String>(
         builder: (_) => PublishPage(
-          hostName: _authSession?.displayName ?? widget.user.name,
-          defaultArea: widget.user.area,
-          hostFaceTraits: widget.user.faceTraits,
-          intensityScore: widget.user.intensityScore,
+          hostName: _authSession?.displayName ?? _userProfile.name,
+          suggestedSceneId: suggestedScene,
+          hostFaceTraits: _userProfile.faceTraits,
+          intensityScore: _userProfile.intensityScore,
           authSession: _authSession,
         ),
       ),
     );
 
-    if (published == true && mounted) {
+    if (publishedSceneId != null &&
+        publishedSceneId.isNotEmpty &&
+        mounted) {
+      setState(() => _lastPublishSceneId = publishedSceneId);
+      await _loadFeedPosts();
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('发布成功，Feed 刷新将在 API 对接后生效')),
+        SnackBar(
+          content: Text(
+            '发布成功（${SceneCategories.labelFor(publishedSceneId)}），Feed 已刷新',
+          ),
+        ),
       );
     }
   }
@@ -723,12 +1061,18 @@ class _MainFeedPageState extends State<MainFeedPage>
     if (!mounted) return;
 
     try {
-      final guest = await authService.guestLogin(username: widget.user.name);
+      final guest = await authService.guestLogin(username: _userProfile.name);
       if (!mounted) return;
       setState(() {
         _authSession = guest;
         _isLoggedIn = false;
+        _userProfile = _userProfile.copyWith(
+          name: guest.displayName,
+          userId: guest.userId,
+        );
       });
+      widget.onAuthChanged?.call(guest, false);
+      widget.onUserProfileChanged?.call(_userProfile);
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('已退出登录，当前为游客模式')),
       );
@@ -737,6 +1081,7 @@ class _MainFeedPageState extends State<MainFeedPage>
         _authSession = widget.authSession;
         _isLoggedIn = false;
       });
+      widget.onAuthChanged?.call(widget.authSession, false);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('已清除本地登录状态')),
@@ -745,46 +1090,40 @@ class _MainFeedPageState extends State<MainFeedPage>
     }
   }
 
-  /// 顶部导航：未登录显示登录入口，已登录显示头像菜单
-  Widget _buildProfileAction() {
-    if (!_showsRegisteredUI) {
-      return IconButton(
-        icon: const Icon(Icons.login_rounded),
-        tooltip: '登录/注册',
-        onPressed: _showLoginBottomSheet,
-      );
-    }
-
-    final session = _authSession!;
-    final name = (_authSession?.displayName ?? widget.user.name).trim();
-    final initial =
-        name.isNotEmpty ? name.substring(0, 1).toUpperCase() : 'U';
-
-    return PopupMenuButton<String>(
-      tooltip: '账号',
-      onSelected: (value) {
-        if (value == 'logout') _logout();
-      },
-      itemBuilder: (context) => [
-        PopupMenuItem(
-          value: 'logout',
-          child: Text('退出登录${session.phone != null ? ' (${session.phone})' : ''}'),
-        ),
-      ],
-      child: Padding(
-        padding: const EdgeInsets.only(right: 8),
-        child: CircleAvatar(
-          radius: 18,
-          backgroundColor: const Color(0xFFE6F0FF),
-          child: Text(
-            initial,
-            style: const TextStyle(
-              color: Color(0xFF002FA7),
-              fontWeight: FontWeight.w800,
-              fontSize: 15,
-            ),
+  /// AppBar 内小红书式圆角搜索框
+  Widget _buildAppBarSearch() {
+    return Container(
+      height: 38,
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(19),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
           ),
+        ],
+      ),
+      child: TextField(
+        controller: _searchController,
+        focusNode: _searchFocus,
+        textInputAction: TextInputAction.search,
+        style: const TextStyle(fontSize: 14),
+        decoration: const InputDecoration(
+          hintText: '搜索组局、话题、地点',
+          hintStyle: TextStyle(color: Colors.black38, fontSize: 14),
+          prefixIcon: Icon(Icons.search_rounded, color: Colors.black45, size: 22),
+          border: InputBorder.none,
+          contentPadding: EdgeInsets.symmetric(vertical: 10),
+          isDense: true,
         ),
+        onChanged: (value) {
+          setState(() {
+            _searchText = value.trim();
+            _invalidateVectorCache();
+          });
+        },
       ),
     );
   }
@@ -842,15 +1181,15 @@ class _MainFeedPageState extends State<MainFeedPage>
   /// 向量检索 + Redis 缓存，一次请求只算一遍 matchScore
   Map<String, double> get _vectorMatchScores {
     if (_vectorMatchScoreCache != null) return _vectorMatchScoreCache!;
-    final postById = {for (final p in mockPosts) p.id: p};
+    final postById = {for (final p in _feedSource) p.id: p};
     final query = VectorMatchQuery(
-      userId: widget.user.userId,
-      userTraits: widget.user.faceTraits,
-      area: widget.user.area.trim(),
-      scoreTier: widget.user.intensityScore,
+      userId: _userProfile.userId,
+      userTraits: _userProfile.faceTraits,
+      area: _userProfile.area.trim(),
+      scoreTier: _userProfile.intensityScore,
       tab: _currentTabLabel,
-      blockedPostIds: widget.user.blockedPostIds,
-      readPostIds: widget.user.readPostIds,
+      blockedPostIds: _userProfile.blockedPostIds,
+      readPostIds: _userProfile.readPostIds,
       searchText: _searchText,
     );
     final results = vectorMatchService.findSimilar(
@@ -859,7 +1198,7 @@ class _MainFeedPageState extends State<MainFeedPage>
       passesFilters: (id) {
         final post = postById[id];
         if (post == null) return false;
-        if (post.area.trim() != query.area) return false;
+        if (!_postMatchesBrowse(post)) return false;
         if (_shouldExcludeFromRecommendFeed(post)) return false;
         return _matchesSearch(post);
       },
@@ -874,14 +1213,14 @@ class _MainFeedPageState extends State<MainFeedPage>
 
   /// 「匹配」Tab：pgvector 等价逻辑 + Redis 缓存，无 for 循环 Jaccard
   List<MatchPost> _getMatchTabPostsViaVector() {
-    final postById = {for (final p in mockPosts) p.id: p};
+    final postById = {for (final p in _feedSource) p.id: p};
     final scores = _vectorMatchScores;
 
     print('');
     print('╔══════════════════════════════════════════════════════════╗');
     print('║  [_getMatchTabPostsViaVector] 向量检索 + 缓存               ║');
     print('╚══════════════════════════════════════════════════════════╝');
-    print('  pgvector 参数预览: ${vectorMatchService.buildPgVectorParam(widget.user.faceTraits)}');
+    print('  pgvector 参数预览: ${vectorMatchService.buildPgVectorParam(_userProfile.faceTraits)}');
 
     final posts = scores.entries
         .map((e) => postById[e.key])
@@ -894,12 +1233,6 @@ class _MainFeedPageState extends State<MainFeedPage>
     print('══════════════════════════════════════════════════════════');
 
     return posts;
-  }
-
-  @override
-  void dispose() {
-    _tabController.dispose();
-    super.dispose();
   }
 
   static bool _matchesScoreTier(int postScore, int userScore) {
@@ -920,7 +1253,80 @@ class _MainFeedPageState extends State<MainFeedPage>
   }
 
   int _faceMatchScore(MatchPost post) =>
-      computeFaceMatchScore(widget.user.faceTraits, post.hostFaceTraits);
+      computeFaceMatchScore(_userProfile.faceTraits, post.hostFaceTraits);
+
+  String _formatEventBrief(DateTime dt) {
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final day = DateTime(dt.year, dt.month, dt.day);
+    final time =
+        '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
+    if (day == today) return '今天 $time';
+    if (day == today.add(const Duration(days: 1))) return '明天 $time';
+    return '${dt.month}月${dt.day}日 $time';
+  }
+
+  int _estimatePostCardWeight(MatchPost post) {
+    var weight = post.title.length > 18 ? 2 : 1;
+    weight += post.hostFaceTraits.length.clamp(0, 3);
+    if (post.description.trim().isNotEmpty) weight += 1;
+    if (post.isPinned || post.isFull) weight += 1;
+    return weight;
+  }
+
+  Widget _buildMasonryPostGrid(
+    List<MatchPost> posts, {
+    required bool showMatchScore,
+  }) {
+    final left = <Widget>[];
+    final right = <Widget>[];
+    var leftWeight = 0;
+    var rightWeight = 0;
+
+    for (final post in posts) {
+      final card = Padding(
+        padding: const EdgeInsets.only(bottom: 16),
+        child: _buildPostCard(
+          context,
+          post,
+          faceMatchScore:
+              showMatchScore ? _vectorMatchScores[post.id]?.round() : null,
+        ),
+      );
+      final weight = _estimatePostCardWeight(post);
+      if (leftWeight <= rightWeight) {
+        left.add(card);
+        leftWeight += weight;
+      } else {
+        right.add(card);
+        rightWeight += weight;
+      }
+    }
+
+    return ListView(
+      padding: EdgeInsets.zero,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: left,
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: right,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
 
   // ── 推荐流混合排序系数 ──────────────────────────────────────────
   static const double _kInteractionWeight = 0.4;
@@ -932,14 +1338,21 @@ class _MainFeedPageState extends State<MainFeedPage>
   static const double _kDefaultMatchScore = 50;
   static const double _kDefaultActivityScore = 30;
 
-  int get _maxInteractionCount => mockPosts
+  int get _maxInteractionCount => _feedSource
       .map((p) => p.interactionCount)
       .fold(1, (max, count) => count > max ? count : max);
 
-  bool _matchesSearch(MatchPost post) =>
-      _searchText.isEmpty ||
-      post.title.contains(_searchText) ||
-      post.description.contains(_searchText);
+  bool _matchesSearch(MatchPost post) {
+    if (_searchText.isEmpty) return true;
+    final q = _searchText.trim();
+    if (post.title.contains(q) || post.description.contains(q)) return true;
+    for (final tag in post.hostFaceTraits) {
+      if (tag.contains(q) || UserHashtags.format(tag).contains(q)) {
+        return true;
+      }
+    }
+    return false;
+  }
 
   /// 互动基础分 0–100；interactionCount 无效时按 0 处理
   double _resolveInteractionBase(MatchPost post) {
@@ -1028,8 +1441,8 @@ class _MainFeedPageState extends State<MainFeedPage>
   /// 后续接入服务端时，只需扩展 blockedPostIds / readPostIds 数据源。
   /// 若产品希望「已读仍展示但降权」，可在此返回 false 并改为 Sort Score 扣分。
   bool _shouldExcludeFromRecommendFeed(MatchPost post) {
-    if (widget.user.blockedPostIds.contains(post.id)) return true;
-    if (widget.user.readPostIds.contains(post.id)) return true;
+    if (_userProfile.blockedPostIds.contains(post.id)) return true;
+    if (_userProfile.readPostIds.contains(post.id)) return true;
     return false;
   }
 
@@ -1049,8 +1462,8 @@ class _MainFeedPageState extends State<MainFeedPage>
   ///
   /// Sort Score = 互动贡献(×0.4) + 活跃贡献(×0.3) + 匹配贡献(×0.3)
   List<MatchPost> get _getRecommendedPosts {
-    final targetArea = widget.user.area.trim();
-    final userScore = widget.user.intensityScore;
+    final browseLabel = SceneCategories.labelFor(_browseSceneId);
+    final userScore = _userProfile.intensityScore;
     final seenIds = <String>{};
     final candidates = <MatchPost>[];
 
@@ -1058,17 +1471,17 @@ class _MainFeedPageState extends State<MainFeedPage>
     print('╔══════════════════════════════════════════════════════════╗');
     print('║  [_getRecommendedPosts] 推荐流 · 混合排序                   ║');
     print('╚══════════════════════════════════════════════════════════╝');
-    print('  目标分类 : "$targetArea"');
+    print('  浏览筛选 : "$browseLabel" ($_browseSceneId)');
     print('  用户分值 : $userScore');
-    print('  屏蔽列表 : ${widget.user.blockedPostIds.isEmpty ? "(无)" : widget.user.blockedPostIds.join(", ")}');
-    print('  已读列表 : ${widget.user.readPostIds.isEmpty ? "(无)" : widget.user.readPostIds.join(", ")}');
+    print('  屏蔽列表 : ${_userProfile.blockedPostIds.isEmpty ? "(无)" : _userProfile.blockedPostIds.join(", ")}');
+    print('  已读列表 : ${_userProfile.readPostIds.isEmpty ? "(无)" : _userProfile.readPostIds.join(", ")}');
     print('  公式     : Sort Score = 互动×$_kInteractionWeight'
         ' + 活跃×$_kActivityWeight + 匹配×$_kMatchScoreWeight');
     print('  缺省值   : matchScore→$_kDefaultMatchScore, 活跃→$_kDefaultActivityScore');
     print('──────────────────────────────────────────────────────────');
 
-    for (final post in mockPosts) {
-      if (post.area.trim() != targetArea) continue;
+    for (final post in _feedSource) {
+      if (!_postMatchesBrowse(post)) continue;
       if (_shouldExcludeFromRecommendFeed(post)) {
         print('  ✗ [${post.id}] ${post.title} — 屏蔽/已读过滤');
         continue;
@@ -1127,8 +1540,8 @@ class _MainFeedPageState extends State<MainFeedPage>
 
   List<MatchPost> get _filteredPosts {
     final tabLabel = _currentTabLabel;
-    final targetArea = widget.user.area.trim();
-    final userScore = widget.user.intensityScore;
+    final browseLabel = SceneCategories.labelFor(_browseSceneId);
+    final userScore = _userProfile.intensityScore;
     final isMatchTab = tabLabel == '匹配';
 
     if (tabLabel == '推荐') {
@@ -1143,18 +1556,18 @@ class _MainFeedPageState extends State<MainFeedPage>
     print('╔══════════════════════════════════════════════════════════╗');
     print('║  [main.dart _filteredPosts] 开始过滤                      ║');
     print('╚══════════════════════════════════════════════════════════╝');
-    print('  目标分类 : "$targetArea"');
+    print('  浏览筛选 : "$browseLabel" ($_browseSceneId)');
     print('  用户分值 : $userScore');
-    print('  用户捏脸 : ${widget.user.faceTraits}');
+    print('  用户捏脸 : ${_userProfile.faceTraits}');
     print('  当前 Tab : "$tabLabel"');
     print('  搜索词   : "${_searchText.isEmpty ? "(空)" : _searchText}"');
-    print('  数据源   : mockPosts 共 ${mockPosts.length} 条');
+    print('  数据源   : Feed 共 ${_feedSource.length} 条 (api=$_feedFromApi)');
     print('──────────────────────────────────────────────────────────');
 
     final results = <MatchPost>[];
     var round = 0;
 
-    for (final post in mockPosts) {
+    for (final post in _feedSource) {
       if (_shouldExcludeFromRecommendFeed(post)) continue;
 
       round++;
@@ -1167,8 +1580,8 @@ class _MainFeedPageState extends State<MainFeedPage>
       print('  发帖人捏脸    : ${post.hostFaceTraits}');
       print('  捏脸匹配分    : $faceScore');
 
-      final areaMatch = post.area.trim() == targetArea;
-      print('  [分类] "${post.area}" == "$targetArea" → ${areaMatch ? "✓" : "✗"}');
+      final areaMatch = _postMatchesBrowse(post);
+      print('  [分类] "${post.area}" vs 浏览 $_browseSceneId → ${areaMatch ? "✓" : "✗"}');
       if (!areaMatch) {
         print('  ▶ 剔除 — 分类不符');
         continue;
@@ -1201,7 +1614,7 @@ class _MainFeedPageState extends State<MainFeedPage>
     }
 
     print('');
-    print('  过滤完成: ${results.length}/${mockPosts.length} 条');
+    print('  过滤完成: ${results.length}/${_feedSource.length} 条');
     if (isMatchTab) {
       results.sort(
         (a, b) => (_vectorMatchScores[b.id] ?? 0)
@@ -1219,9 +1632,8 @@ class _MainFeedPageState extends State<MainFeedPage>
     return results;
   }
 
-  /// 仅在「同分类」内放宽条件，绝不跨分类展示
+  /// 仅在当前浏览筛选内放宽条件，绝不跨场景展示
   List<MatchPost> get _fallbackPosts {
-    final targetArea = widget.user.area.trim();
     final tabLabel = _currentTabLabel;
     final isMatchTab = tabLabel == '匹配';
 
@@ -1229,8 +1641,8 @@ class _MainFeedPageState extends State<MainFeedPage>
       final seenIds = <String>{};
       final list = <MatchPost>[];
 
-      for (final post in mockPosts) {
-        if (post.area.trim() != targetArea) continue;
+      for (final post in _feedSource) {
+        if (!_postMatchesBrowse(post)) continue;
         if (_shouldExcludeFromRecommendFeed(post)) continue;
         if (!_matchesSearch(post)) continue;
         if (seenIds.contains(post.id)) continue;
@@ -1245,9 +1657,9 @@ class _MainFeedPageState extends State<MainFeedPage>
       return _getMatchTabPostsViaVector();
     }
 
-    final list = mockPosts.where((post) {
+    final list = _feedSource.where((post) {
       if (_shouldExcludeFromRecommendFeed(post)) return false;
-      if (post.area.trim() != targetArea) return false;
+      if (!_postMatchesBrowse(post)) return false;
       if (post.tab != tabLabel) return false;
       return _matchesSearch(post);
     }).toList()
@@ -1255,123 +1667,321 @@ class _MainFeedPageState extends State<MainFeedPage>
     return list;
   }
 
+  Widget _buildPostCardAuthorRow(MatchPost post) {
+    final name =
+        post.hostNickname.trim().isEmpty ? '用户' : post.hostNickname.trim();
+    final initial = name.isNotEmpty ? name.substring(0, 1) : 'U';
+    final followed = _isHostFollowed(post);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 4, 12, 10),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () => _toggleFollowHost(post),
+        child: Row(
+          children: [
+            CircleAvatar(
+              radius: 11,
+              backgroundColor: const Color(0xFFE6F0FF),
+              child: Text(
+                initial,
+                style: const TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w700,
+                  color: Color(0xFF002FA7),
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: Colors.black.withValues(alpha: 0.55),
+                ),
+              ),
+            ),
+            if (followed) ...[
+              Icon(
+                Icons.check_circle,
+                size: 13,
+                color: Colors.black.withValues(alpha: 0.35),
+              ),
+              const SizedBox(width: 2),
+              Text(
+                '已关注',
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Colors.black.withValues(alpha: 0.35),
+                ),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildPostCard(BuildContext context, MatchPost post, {int? faceMatchScore}) {
+    final hasApplied = _appliedPostIds.contains(post.id) || post.hasApplied;
+    final isFull = post.isFull;
+    final description = post.description.trim();
     return Material(
       color: Colors.white,
       borderRadius: BorderRadius.circular(20),
       elevation: 1,
-      child: InkWell(
-        borderRadius: BorderRadius.circular(20),
-        onTap: () {
-          Navigator.of(context).push(
-            MaterialPageRoute(
-              builder: (_) => PostDetailPage(post: post),
-            ),
-          );
-        },
+      child: Opacity(
+        opacity: isFull ? 0.72 : 1,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            Container(
-              height: 120,
-              decoration: BoxDecoration(
-                color: const Color(0xFFECECF7),
-                borderRadius: const BorderRadius.vertical(
-                  top: Radius.circular(20),
-                ),
-              ),
-              child: const Center(
-                child: Icon(
-                  Icons.image,
-                  size: 40,
-                  color: Colors.black26,
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.all(14),
+            InkWell(
+              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+              onTap: () => _openPostDetail(post),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    post.title,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  const SizedBox(height: 10),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
+                  Stack(
                     children: [
                       Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 10,
-                          vertical: 6,
+                        height: 120,
+                        decoration: const BoxDecoration(
+                          color: Color(0xFFECECF7),
+                          borderRadius: BorderRadius.vertical(
+                            top: Radius.circular(20),
+                          ),
                         ),
-                        decoration: BoxDecoration(
-                          color: post.isFull
-                              ? Colors.grey.shade200
-                              : const Color(0xFFE6F0FF),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: Text(
-                          post.isFull ? '已满员' : '组队中',
-                          style: TextStyle(
-                            color: post.isFull
-                                ? Colors.black54
-                                : const Color(0xFF002FA7),
-                            fontSize: 12,
-                            fontWeight: FontWeight.w600,
+                        child: const Center(
+                          child: Icon(
+                            Icons.image,
+                            size: 40,
+                            color: Colors.black26,
                           ),
                         ),
                       ),
-                      if (faceMatchScore != null)
-                        Container(
+                      Positioned(
+                        top: 8,
+                        right: 8,
+                        child: Container(
                           padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
+                            horizontal: 8,
+                            vertical: 4,
                           ),
                           decoration: BoxDecoration(
-                            color: const Color(0xFFE6F0FF),
-                            borderRadius: BorderRadius.circular(12),
+                            color: isFull
+                                ? Colors.black.withValues(alpha: 0.55)
+                                : Colors.black.withValues(alpha: 0.45),
+                            borderRadius: BorderRadius.circular(10),
                           ),
                           child: Text(
-                            '匹配 $faceMatchScore%',
+                            isFull
+                                ? '${post.currentMembers}/${post.peopleLimit} 满'
+                                : '${post.currentMembers}/${post.peopleLimit}',
                             style: const TextStyle(
-                              color: Color(0xFF002FA7),
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w700,
                             ),
                           ),
                         ),
-                      if (post.isPinned)
+                      ),
+                      if (isFull)
                         Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 6,
-                          ),
+                          height: 120,
                           decoration: BoxDecoration(
-                            color: const Color(0xFF002FA7),
-                            borderRadius: BorderRadius.circular(12),
+                            color: Colors.black.withValues(alpha: 0.28),
+                            borderRadius: const BorderRadius.vertical(
+                              top: Radius.circular(20),
+                            ),
                           ),
-                          child: const Text(
-                            '置顶',
-                            style: TextStyle(
-                              color: Colors.white,
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
+                          alignment: Alignment.center,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.92),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: const Text(
+                              '已满员',
+                              style: TextStyle(
+                                fontSize: 13,
+                                fontWeight: FontWeight.w800,
+                                color: Color(0xFF616161),
+                              ),
                             ),
                           ),
                         ),
                     ],
                   ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          post.title,
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                        if (description.isNotEmpty) ...[
+                          const SizedBox(height: 6),
+                          Text(
+                            description,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              height: 1.35,
+                              color: Colors.black.withValues(alpha: 0.45),
+                            ),
+                          ),
+                        ],
+                        const SizedBox(height: 8),
+                        Wrap(
+                          spacing: 6,
+                          runSpacing: 6,
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                                vertical: 4,
+                              ),
+                              decoration: BoxDecoration(
+                                color: isFull
+                                    ? Colors.grey.shade300
+                                    : const Color(0xFFE6F0FF),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text(
+                                isFull
+                                    ? '已满员'
+                                    : hasApplied
+                                        ? '已申请'
+                                        : '组队中',
+                                style: TextStyle(
+                                  color: isFull
+                                      ? const Color(0xFF424242)
+                                      : hasApplied
+                                          ? Colors.orange.shade800
+                                          : const Color(0xFF002FA7),
+                                  fontSize: 11,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            if (faceMatchScore != null)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFFE6F0FF),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  '匹配 $faceMatchScore%',
+                                  style: const TextStyle(
+                                    color: Color(0xFF002FA7),
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            if (post.isPinned)
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: const Color(0xFF002FA7),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: const Text(
+                                  '置顶',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            HashtagChip(
+                              tag: SceneCategories.labelFor(post.area),
+                              compact: true,
+                            ),
+                            ...post.hostFaceTraits.take(2).map(
+                                  (t) => HashtagChip(tag: t, compact: true),
+                                ),
+                          ],
+                        ),
+                        if (post.eventLocation.trim().isNotEmpty) ...[
+                          const SizedBox(height: 8),
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.schedule_rounded,
+                                size: 12,
+                                color: Colors.black.withValues(alpha: 0.35),
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  _formatEventBrief(post.eventDateTime),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.black.withValues(alpha: 0.4),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.place_outlined,
+                                size: 12,
+                                color: Colors.black.withValues(alpha: 0.35),
+                              ),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  post.eventLocation.trim(),
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontSize: 11,
+                                    color: Colors.black.withValues(alpha: 0.4),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
                 ],
               ),
             ),
+            _buildPostCardAuthorRow(post),
           ],
         ),
       ),
@@ -1410,10 +2020,10 @@ class _MainFeedPageState extends State<MainFeedPage>
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
+        scrolledUnderElevation: 0,
         foregroundColor: Colors.black,
-        title: const Text('MATCHit 首页'),
-        centerTitle: false,
-        actions: [_buildProfileAction()],
+        titleSpacing: 16,
+        title: _buildAppBarSearch(),
       ),
       body: SafeArea(
         bottom: false,
@@ -1425,11 +2035,44 @@ class _MainFeedPageState extends State<MainFeedPage>
               const SizedBox(height: 12),
               _buildAuthStatusBanner(),
               Text(
-                '嘿，${widget.user.name}，今天想在哪方面找搭子？',
+                '嘿，${_userProfile.name}，发现附近的组局搭子',
                 style: theme.textTheme.headlineLarge?.copyWith(fontSize: 28),
               ),
               const SizedBox(height: 12),
-              if (widget.user.isHardcore && widget.user.area == 'BoardGames')
+              Material(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(16),
+                elevation: 0,
+                shadowColor: Colors.black26,
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(16),
+                  onTap: _openBrowseFilter,
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 16,
+                      vertical: 14,
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.filter_list_rounded, color: Color(0xFF002FA7)),
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: Text(
+                            '我在看：${SceneCategories.labelFor(_browseSceneId)}',
+                            style: const TextStyle(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                            ),
+                          ),
+                        ),
+                        const Icon(Icons.keyboard_arrow_down_rounded),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 12),
+              if (_userProfile.isHardcore && _userProfile.area == 'BoardGames')
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
                   decoration: BoxDecoration(
@@ -1445,30 +2088,8 @@ class _MainFeedPageState extends State<MainFeedPage>
                     ),
                   ),
                 ),
-              if (widget.user.isHardcore && widget.user.area == 'BoardGames')
+              if (_userProfile.isHardcore && _userProfile.area == 'BoardGames')
                 const SizedBox(height: 16),
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: cardShadow,
-                ),
-                child: TextField(
-                  decoration: InputDecoration(
-                    icon: const Icon(Icons.search, color: Colors.black54),
-                    hintText: 'Search for matches, topics or locations',
-                    border: InputBorder.none,
-                  ),
-                  onChanged: (value) {
-                    setState(() {
-                      _searchText = value;
-                      _invalidateVectorCache();
-                    });
-                  },
-                ),
-              ),
-              const SizedBox(height: 18),
               Container(
                 decoration: BoxDecoration(
                   color: Colors.white,
@@ -1490,9 +2111,8 @@ class _MainFeedPageState extends State<MainFeedPage>
                     Tab(text: '桌游'),
                   ],
                   onTap: (_) {
-                    setState(() {
-                      _invalidateVectorCache();
-                    });
+                    setState(() => _invalidateVectorCache());
+                    _loadFeedPosts();
                   },
                 ),
               ),
@@ -1530,53 +2150,17 @@ class _MainFeedPageState extends State<MainFeedPage>
                           ),
                           const SizedBox(height: 18),
                           Expanded(
-                            child: GridView.builder(
-                              padding: EdgeInsets.zero,
-                              itemCount: fallback.length,
-                              gridDelegate:
-                                  const SliverGridDelegateWithFixedCrossAxisCount(
-                                crossAxisCount: 2,
-                                childAspectRatio: 0.72,
-                                crossAxisSpacing: 16,
-                                mainAxisSpacing: 16,
-                              ),
-                              itemBuilder: (context, index) {
-                                final post = fallback[index];
-                                return _buildPostCard(
-                                  context,
-                                  post,
-                                  faceMatchScore:
-                                      _isMatchTab
-                                          ? _vectorMatchScores[post.id]?.round()
-                                          : null,
-                                );
-                              },
+                            child: _buildMasonryPostGrid(
+                              fallback,
+                              showMatchScore: _isMatchTab,
                             ),
                           ),
                         ],
                       );
                     }
-                    return GridView.builder(
-                      padding: EdgeInsets.zero,
-                      itemCount: posts.length,
-                      gridDelegate:
-                          const SliverGridDelegateWithFixedCrossAxisCount(
-                        crossAxisCount: 2,
-                        childAspectRatio: 0.72,
-                        crossAxisSpacing: 16,
-                        mainAxisSpacing: 16,
-                      ),
-                      itemBuilder: (context, index) {
-                        final post = posts[index];
-                        return _buildPostCard(
-                          context,
-                          post,
-                          faceMatchScore:
-                              _isMatchTab
-                                  ? _vectorMatchScores[post.id]?.round()
-                                  : null,
-                        );
-                      },
+                    return _buildMasonryPostGrid(
+                      posts,
+                      showMatchScore: _isMatchTab,
                     );
                   },
                 ),
@@ -1585,21 +2169,105 @@ class _MainFeedPageState extends State<MainFeedPage>
           ),
         ),
       ),
-      bottomNavigationBar: BottomPublishBar(
-        onPublish: _openPublishPage,
-        onProfile: _showsRegisteredUI ? _logout : _showLoginBottomSheet,
+    );
+  }
+
+  Future<void> _openPostDetail(MatchPost post) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => PostDetailPage(
+          post: post,
+          hasApplied: _appliedPostIds.contains(post.id) || post.hasApplied,
+          isGuest: !_showsRegisteredUI,
+          authSession: _authSession,
+          onApply: () {
+            if (!mounted) return;
+            setState(() => _appliedPostIds.add(post.id));
+            widget.onApplicationChanged?.call();
+          },
+          onRequestLogin: _showLoginBottomSheet,
+        ),
       ),
     );
+    if (mounted) await _loadFeedPosts();
   }
 }
 
-class PostDetailPage extends StatelessWidget {
-  const PostDetailPage({super.key, required this.post});
+class PostDetailPage extends StatefulWidget {
+  const PostDetailPage({
+    super.key,
+    required this.post,
+    required this.hasApplied,
+    required this.isGuest,
+    required this.onApply,
+    this.authSession,
+    this.onRequestLogin,
+  });
 
   final MatchPost post;
+  final bool hasApplied;
+  final bool isGuest;
+  final AuthSession? authSession;
+  final VoidCallback onApply;
+  final Future<void> Function()? onRequestLogin;
+
+  @override
+  State<PostDetailPage> createState() => _PostDetailPageState();
+}
+
+class _PostDetailPageState extends State<PostDetailPage> {
+  late bool _hasApplied;
+  late MatchPost _post;
+  List<PostMember> _members = const [];
+
+  MatchPost get post => _post;
+
+  bool get _isHost {
+    final hostId = post.hostUserId?.trim();
+    final myId = widget.authSession?.userId.trim();
+    if (hostId == null || hostId.isEmpty || myId == null || myId.isEmpty) {
+      return false;
+    }
+    return hostId == myId;
+  }
 
   static const Color _primary = Color(0xFF002FA7);
   static const Color _background = Color(0xFFF2F2F7);
+
+  @override
+  void initState() {
+    super.initState();
+    _hasApplied = widget.hasApplied;
+    _post = widget.post;
+    _loadPostDetail();
+    _syncAppliedFromApi();
+  }
+
+  Future<void> _loadPostDetail() async {
+    try {
+      final fresh = await postService.fetchPost(_post.id);
+      final members = await postService.fetchPostMembers(_post.id);
+      if (!mounted) return;
+      setState(() {
+        if (fresh != null) _post = fresh;
+        _members = members;
+      });
+    } catch (_) {}
+  }
+
+  Future<void> _syncAppliedFromApi() async {
+    final session = widget.authSession;
+    if (session == null || session.isGuest || _hasApplied) return;
+    try {
+      final applied = await postService.fetchHasApplied(
+        session: session,
+        postId: post.id,
+      );
+      if (mounted && applied) {
+        setState(() => _hasApplied = true);
+      }
+    } catch (_) {}
+  }
 
   String _formatEventDate(DateTime dt) =>
       '${dt.year}年${dt.month}月${dt.day}日';
@@ -1607,8 +2275,113 @@ class PostDetailPage extends StatelessWidget {
   String _formatEventTime(DateTime dt) =>
       '${dt.hour.toString().padLeft(2, '0')}:${dt.minute.toString().padLeft(2, '0')}';
 
-  void _showApplyDialog(BuildContext context) {
-    showDialog<void>(
+  Future<void> _promptLogin(String title) async {
+    final goLogin = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: const Text('游客仅可浏览帖子。申请加入、私聊需先登录账号。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('继续浏览'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('去登录'),
+          ),
+        ],
+      ),
+    );
+    if (goLogin == true && widget.onRequestLogin != null) {
+      await widget.onRequestLogin!();
+    }
+  }
+
+  Future<void> _handleApply() async {
+    if (_isHost || _hasApplied || post.isFull) return;
+
+    if (widget.isGuest) {
+      await _promptLogin('登录后申请加入');
+      return;
+    }
+
+    final session = widget.authSession;
+    if (session == null) {
+      await _promptLogin('登录后申请加入');
+      return;
+    }
+
+    final wechatController = TextEditingController();
+    final wechat = await showDialog<String>(
+      context: context,
+      builder: (ctx) {
+        return AlertDialog(
+          title: const Text('微信昵称或微信号'),
+          content: TextField(
+            controller: wechatController,
+            decoration: const InputDecoration(
+              hintText: '必填，方便主理人对账',
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(ctx).pop(),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.of(ctx).pop(wechatController.text.trim()),
+              child: const Text('提交申请'),
+            ),
+          ],
+        );
+      },
+    );
+    wechatController.dispose();
+    if (wechat == null || wechat.isEmpty) {
+      if (mounted && wechat != null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('请填写微信昵称或微信号')),
+        );
+      }
+      return;
+    }
+
+    try {
+      await postService.applyToPost(
+        session: session,
+        postId: post.id,
+        wechatContact: wechat,
+      );
+    } on AuthException catch (e) {
+      if (!mounted) return;
+      if (e.action == 'bind_phone') {
+        await _promptLogin('登录后申请加入');
+        return;
+      }
+      final msg = e.message.contains('own post') ||
+              e.message.contains('不能申请自己')
+          ? '不能申请自己发布的组局'
+          : e.message;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg)),
+      );
+      return;
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('申请失败：$e')),
+      );
+      return;
+    }
+
+    setState(() => _hasApplied = true);
+    widget.onApply();
+    await _loadPostDetail();
+
+    if (!mounted) return;
+    await showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('申请已发送'),
@@ -1623,7 +2396,13 @@ class PostDetailPage extends StatelessWidget {
     );
   }
 
-  void _onPrivateChat(BuildContext context) {
+  Future<void> _onPrivateChat() async {
+    if (widget.isGuest) {
+      await _promptLogin('登录后私聊');
+      return;
+    }
+
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text('即将与 ${post.hostNickname} 开始私聊'),
@@ -1655,11 +2434,52 @@ class PostDetailPage extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  // ── 发布者用户卡片 ──
+                  if (_isHost)
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFE8F0FE),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: const Color(0xFF90CAF9)),
+                      ),
+                      child: const Text(
+                        '这是你发布的组局。可在底部「消息 → 申请」查看他人报名（功能完善中）。',
+                        style: TextStyle(
+                          fontSize: 13,
+                          height: 1.45,
+                          color: Color(0xFF1565C0),
+                        ),
+                      ),
+                    ),
+                  if (widget.isGuest)
+                    Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF3E0),
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: const Color(0xFFFFB74D)),
+                      ),
+                      child: const Text(
+                        '当前为游客，仅可浏览。申请加入、私聊需先登录账号。',
+                        style: TextStyle(
+                          fontSize: 13,
+                          height: 1.45,
+                          color: Color(0xFFE65100),
+                        ),
+                      ),
+                    ),
                   _buildPublisherCard(),
                   const SizedBox(height: 16),
-
-                  // ── 封面图 ──
                   Container(
                     height: 180,
                     width: double.infinity,
@@ -1670,8 +2490,6 @@ class PostDetailPage extends StatelessWidget {
                     child: const Icon(Icons.image, size: 48, color: Colors.black26),
                   ),
                   const SizedBox(height: 20),
-
-                  // ── 标题 & 描述 ──
                   Text(
                     post.title,
                     style: theme.textTheme.titleLarge?.copyWith(
@@ -1688,21 +2506,29 @@ class PostDetailPage extends StatelessWidget {
                       color: Colors.black87,
                     ),
                   ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      HashtagChip(
+                        tag: SceneCategories.labelFor(post.area),
+                        compact: true,
+                      ),
+                      ...post.hostFaceTraits.map(
+                        (t) => HashtagChip(tag: t, compact: true),
+                      ),
+                    ],
+                  ),
                   const SizedBox(height: 20),
-
-                  // ── 活动日期 / 时间 / 地点 ──
                   _buildEventInfoCard(),
                   const SizedBox(height: 16),
-
-                  // ── 组队进度 & 头像墙 ──
                   _buildTeamSection(progress),
                 ],
               ),
             ),
           ),
-
-          // ── 底部交互区 ──
-          _buildActionBar(context),
+          _buildActionBar(),
         ],
       ),
     );
@@ -1789,26 +2615,7 @@ class PostDetailPage extends StatelessWidget {
                   spacing: 8,
                   runSpacing: 8,
                   children: post.hostFaceTraits
-                      .map(
-                        (tag) => Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 10,
-                            vertical: 5,
-                          ),
-                          decoration: BoxDecoration(
-                            color: const Color(0xFFE6F0FF),
-                            borderRadius: BorderRadius.circular(10),
-                          ),
-                          child: Text(
-                            tag,
-                            style: const TextStyle(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w600,
-                              color: _primary,
-                            ),
-                          ),
-                        ),
-                      )
+                      .map((tag) => HashtagChip(tag: tag, compact: true))
                       .toList(),
                 ),
               ],
@@ -1917,7 +2724,12 @@ class PostDetailPage extends StatelessWidget {
       Color(0xFFEDE7F6),
       Color(0xFFECEFF1),
     ];
-    final displayCount = post.currentMembers.clamp(0, 8);
+    final memberList = _members.isNotEmpty
+        ? _members.take(8).toList()
+        : <PostMember>[];
+    final displayCount = memberList.isNotEmpty
+        ? memberList.length
+        : post.currentMembers.clamp(0, 8);
     final avatarWallWidth = displayCount > 0
         ? avatarSize + (displayCount - 1) * (avatarSize - overlap)
         : 0.0;
@@ -1996,7 +2808,9 @@ class PostDetailPage extends StatelessWidget {
                           radius: avatarSize / 2 - 2,
                           backgroundColor: avatarColors[i % avatarColors.length],
                           child: Text(
-                            '${i + 1}',
+                            memberList.isNotEmpty
+                                ? memberList[i].initial
+                                : '${i + 1}',
                             style: const TextStyle(
                               fontSize: 13,
                               fontWeight: FontWeight.w600,
@@ -2009,6 +2823,22 @@ class PostDetailPage extends StatelessWidget {
                 ],
               ),
             ),
+            if (memberList.isNotEmpty) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 4,
+                children: memberList.map((m) {
+                  return Text(
+                    m.isHost ? '${m.displayName}（主理人）' : m.displayName,
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.black.withValues(alpha: 0.55),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ],
             if (post.currentMembers > 8)
               Padding(
                 padding: const EdgeInsets.only(top: 8),
@@ -2023,7 +2853,7 @@ class PostDetailPage extends StatelessWidget {
     );
   }
 
-  Widget _buildActionBar(BuildContext context) {
+  Widget _buildActionBar() {
     return Container(
       padding: EdgeInsets.fromLTRB(
         20,
@@ -2045,7 +2875,7 @@ class PostDetailPage extends StatelessWidget {
         children: [
           Expanded(
             child: OutlinedButton.icon(
-              onPressed: () => _onPrivateChat(context),
+              onPressed: _onPrivateChat,
               icon: const Icon(Icons.chat_bubble_outline, size: 18),
               label: const Text('私聊'),
               style: OutlinedButton.styleFrom(
@@ -2066,9 +2896,13 @@ class PostDetailPage extends StatelessWidget {
           Expanded(
             flex: 2,
             child: ElevatedButton(
-              onPressed: post.isFull ? null : () => _showApplyDialog(context),
+              onPressed: _isHost || post.isFull || _hasApplied
+                  ? null
+                  : _handleApply,
               style: ElevatedButton.styleFrom(
-                backgroundColor: post.isFull ? Colors.grey.shade400 : _primary,
+                backgroundColor: _isHost || post.isFull || _hasApplied
+                    ? Colors.grey.shade400
+                    : _primary,
                 foregroundColor: Colors.white,
                 padding: const EdgeInsets.symmetric(vertical: 14),
                 shape: RoundedRectangleBorder(
@@ -2077,7 +2911,13 @@ class PostDetailPage extends StatelessWidget {
                 elevation: 0,
               ),
               child: Text(
-                post.isFull ? '已满员' : '申请加入',
+                _isHost
+                    ? '我是主理人'
+                    : post.isFull
+                        ? '已满员'
+                        : _hasApplied
+                            ? '已申请'
+                            : '申请加入',
                 style: const TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w700,
@@ -2086,269 +2926,6 @@ class PostDetailPage extends StatelessWidget {
             ),
           ),
         ],
-      ),
-    );
-  }
-}
-
-class AreaOption {
-  const AreaOption({required this.label, required this.icon});
-
-  final String label;
-  final IconData icon;
-}
-
-class AreaSelectionPage extends StatefulWidget {
-  const AreaSelectionPage({
-    super.key,
-    required this.name,
-    this.authSession,
-  });
-
-  final String name;
-  final AuthSession? authSession;
-
-  @override
-  State<AreaSelectionPage> createState() => _AreaSelectionPageState();
-}
-
-class _AreaSelectionPageState extends State<AreaSelectionPage> {
-  static const List<AreaOption> _areaOptions = [
-    AreaOption(label: 'BoardGames', icon: Icons.sports_esports),
-    AreaOption(label: 'Food', icon: Icons.fastfood),
-    AreaOption(label: 'Sport', icon: Icons.sports_basketball),
-  ];
-
-  String _selectedArea = 'BoardGames';
-  int _intensityLevel = 2;
-
-  static const List<String> _intensityLabels = [
-    '新手',
-    '普通',
-    '进阶',
-    '硬核',
-    '大神',
-  ];
-
-  static const List<int> _intensityScores = [0, 25, 50, 75, 100];
-
-  int get _intensityScore => _intensityScores[_intensityLevel];
-
-  bool get _isHardcore => _selectedArea == 'BoardGames' && _intensityScore >= 75;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final cardShadow = [
-      BoxShadow(
-        color: Colors.black.withValues(alpha: 0.05),
-        blurRadius: 20,
-        offset: const Offset(0, 10),
-      ),
-    ];
-
-    return Scaffold(
-      backgroundColor: const Color(0xFFF2F2F7),
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  ScaleTapButton(
-                    onTap: () => Navigator.of(context).pop(),
-                    borderRadius: BorderRadius.circular(18),
-                    child: Container(
-                      width: 42,
-                      height: 42,
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(18),
-                        boxShadow: cardShadow,
-                      ),
-                      child: const Icon(
-                        Icons.arrow_back,
-                        color: Colors.black87,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 14),
-                  Text(
-                    'Area Selection',
-                    style: theme.textTheme.headlineLarge,
-                  ),
-                ],
-              ),
-              const SizedBox(height: 26),
-              Text(
-                '嘿，${widget.name}，今天想在哪方面找搭子？',
-                style: theme.textTheme.bodyLarge,
-              ),
-              const SizedBox(height: 24),
-              Container(
-                width: double.infinity,
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(24),
-                  boxShadow: cardShadow,
-                ),
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  children: [
-                    ..._areaOptions.map((option) => Padding(
-                          padding: const EdgeInsets.only(bottom: 12),
-                          child: _buildAreaOption(option),
-                        )),
-                    const SizedBox(height: 40),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: const [
-                        Text('休闲娱乐'),
-                        Text('硬核竞技'),
-                      ],
-                    ),
-                    Slider(
-                      value: _intensityLevel.toDouble(),
-                      min: 0,
-                      max: 4,
-                      divisions: 4,
-                      activeColor: const Color(0xFF002FA7),
-                      inactiveColor: Colors.black12,
-                      label: _intensityLabels[_intensityLevel],
-                      onChanged: (value) {
-                        setState(() {
-                          _intensityLevel = value.round();
-                        });
-                      },
-                    ),
-                    const SizedBox(height: 8),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: _intensityLabels
-                          .map(
-                            (label) => Expanded(
-                              child: Text(
-                                label,
-                                textAlign: TextAlign.center,
-                                style: TextStyle(
-                                  fontSize: 12,
-                                  color: Colors.black54,
-                                ),
-                              ),
-                            ),
-                          )
-                          .toList(),
-                    ),
-                    const SizedBox(height: 12),
-                    Align(
-                      alignment: Alignment.centerRight,
-                      child: Text(
-                        '当前：${_intensityLabels[_intensityLevel]} · $_intensityScore分',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: _isHardcore ? FontWeight.w800 : FontWeight.w600,
-                          color: _intensityScore >= 75 ? Colors.red.shade700 : Colors.black54,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Spacer(),
-              ScaleTapButton(
-                onTap: () {
-                  final profile = UserProfile(
-                    name: widget.name,
-                    area: _selectedArea,
-                    isHardcore: _isHardcore,
-                    intensityScore: _intensityScore,
-                    intensityLabel: _intensityLabels[_intensityLevel],
-                    faceTraits: mockUserFaceTraits(_selectedArea, _intensityScore),
-                    userId: widget.authSession?.userId ??
-                        'user-${widget.name.hashCode.abs()}',
-                    blockedPostIds: const {'board_3'},
-                  );
-                  print('当前用户选择的分值: ${profile.intensityScore}');
-                  print('当前用户捏脸特征: ${profile.faceTraits}');
-                  if (widget.authSession != null) {
-                    print('Auth: guest=${widget.authSession!.isGuest} userId=${widget.authSession!.userId}');
-                  }
-                  Navigator.of(context).push(
-                    MaterialPageRoute(
-                      builder: (_) => MainFeedPage(
-                        user: profile,
-                        authSession: widget.authSession,
-                      ),
-                    ),
-                  );
-                },
-                borderRadius: BorderRadius.circular(50),
-                child: Container(
-                  width: double.infinity,
-                  height: 56,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: const Color(0xFF002FA7),
-                    borderRadius: BorderRadius.circular(50),
-                  ),
-                  child: const Text(
-                    'Confirm selection',
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildAreaOption(AreaOption option) {
-    final selected = _selectedArea == option.label;
-    return ScaleTapButton(
-      onTap: () {
-        setState(() {
-          _selectedArea = option.label;
-        });
-      },
-      borderRadius: BorderRadius.circular(18),
-      child: Container(
-        height: 72,
-        padding: const EdgeInsets.symmetric(horizontal: 18),
-        decoration: BoxDecoration(
-          color: selected ? const Color(0xFFE9EDFF) : const Color(0xFFF5F5F7),
-          borderRadius: BorderRadius.circular(18),
-          border: Border.all(
-            color: selected ? const Color(0xFF002FA7) : Colors.transparent,
-            width: selected ? 1.8 : 1,
-          ),
-        ),
-        child: Row(
-          children: [
-            Icon(option.icon, color: Colors.black87),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Text(
-                option.label,
-                style: const TextStyle(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.black87,
-                ),
-              ),
-            ),
-            if (selected)
-              const Icon(Icons.check_circle, color: Color(0xFF002FA7)),
-          ],
-        ),
       ),
     );
   }

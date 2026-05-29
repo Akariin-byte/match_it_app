@@ -13,8 +13,10 @@ import (
 	"matchit/backend/api/internal/auth"
 	"matchit/backend/api/internal/config"
 	"matchit/backend/api/internal/handler"
+	"matchit/backend/api/internal/push"
 	"matchit/backend/api/internal/sms"
 	"matchit/backend/api/internal/store"
+	"matchit/backend/api/internal/ws"
 
 	"github.com/gin-gonic/gin"
 )
@@ -61,18 +63,20 @@ func main() {
 	)
 	refreshStore := auth.NewRefreshStore(kv, cfg.RefreshTokenTTL)
 	denylist := auth.NewTokenDenylist(kv)
+	chatHub := ws.NewHub()
+	fcm := push.NewFCMFromEnv()
 
 	gin.SetMode(gin.ReleaseMode)
 	r := gin.New()
 	r.Use(gin.Recovery(), corsMiddleware())
-	handler.New(db, users, jwtMgr, smsSvc, refreshStore, denylist, cfg.SMSMock, cfg.SMSCodeTTL).Register(r)
+	handler.New(db, users, jwtMgr, smsSvc, refreshStore, denylist, chatHub, fcm, cfg.SMSMock, cfg.SMSCodeTTL).Register(r)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
 		Handler:      r,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  30 * time.Second,
+		WriteTimeout: 0,
+		IdleTimeout:  120 * time.Second,
 	}
 
 	go func() {

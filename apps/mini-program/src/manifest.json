@@ -1,0 +1,19 @@
+{
+  "name": "MATCHit",
+  "appid": "wx42527e3c53fedce8",
+  "description": "组局搭子 · 微信小程序",
+  "versionName": "0.1.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "mp-weixin": {
+    "appid": "wx42527e3c53fedce8",
+    "setting": {
+      "urlCheck": false,
+      "es6": true,
+      "minified": true
+    },
+    "usingComponents": true,
+    "lazyCodeLoading": "requiredComponents"
+  },
+  "vueVersion": "3"
+}

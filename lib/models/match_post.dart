@@ -1,93 +1,101 @@
+/// 搭子帖模型（Feed / 详情 / API 共用）
 class MatchPost {
-  MatchPost({
+  const MatchPost({
     required this.id,
     required this.title,
     required this.description,
-    required this.category,
-    required this.competitiveness,
     required this.currentMembers,
     required this.maxMembers,
+    this.maxPeople,
+    required this.area,
+    required this.tab,
+    required this.hardcoreScore,
+    required this.hostFaceTraits,
+    required this.interactionCount,
+    required this.lastActiveTime,
+    required this.matchScore,
+    this.hostUserId,
+    required this.hostNickname,
+    required this.hostCreditScore,
+    required this.eventDateTime,
+    required this.eventLocation,
+    this.isPinned = false,
+    this.pinPriority = 0,
     this.hasApplied = false,
+    this.applicationStatus,
   });
+
+  factory MatchPost.fromApiJson(Map<String, dynamic> json) {
+    DateTime parseTime(dynamic v, {DateTime? fallback}) {
+      if (v == null) return fallback ?? DateTime.now();
+      if (v is String && v.isNotEmpty) {
+        return DateTime.parse(v).toLocal();
+      }
+      return fallback ?? DateTime.now();
+    }
+
+    final maxMembers = (json['maxMembers'] as num?)?.toInt() ?? 4;
+    final traits = json['hostFaceTraits'];
+    return MatchPost(
+      id: json['id'] as String,
+      title: json['title'] as String? ?? '',
+      description: json['description'] as String? ?? '',
+      currentMembers: (json['currentMembers'] as num?)?.toInt() ?? 1,
+      maxMembers: maxMembers,
+      maxPeople: (json['maxPeople'] as num?)?.toInt() ?? maxMembers,
+      area: json['area'] as String? ?? '',
+      tab: json['tab'] as String? ?? '推荐',
+      hardcoreScore: (json['hardcoreScore'] as num?)?.toInt() ?? 50,
+      hostFaceTraits: traits is List
+          ? traits.map((e) => e.toString()).toList()
+          : const <String>[],
+      interactionCount: (json['interactionCount'] as num?)?.toInt() ?? 0,
+      lastActiveTime: parseTime(json['lastActiveTime']),
+      matchScore: (json['matchScore'] as num?)?.toDouble() ?? 0,
+      hostUserId: json['hostUserId'] as String?,
+      hostNickname: json['hostNickname'] as String? ?? '用户',
+      hostCreditScore: (json['hostCreditScore'] as num?)?.toInt() ?? 80,
+      eventDateTime: parseTime(
+        json['eventDateTime'],
+        fallback: DateTime.now().add(const Duration(days: 1)),
+      ),
+      eventLocation: json['eventLocation'] as String? ?? '',
+      isPinned: json['isPinned'] as bool? ?? false,
+      pinPriority: (json['pinPriority'] as num?)?.toInt() ?? 0,
+      hasApplied: json['hasApplied'] as bool? ?? false,
+      applicationStatus: json['applicationStatus'] as String?,
+    );
+  }
 
   final String id;
   final String title;
   final String description;
-  final String category;
-  final int competitiveness;
   final int currentMembers;
   final int maxMembers;
-  bool hasApplied;
+  final int? maxPeople;
+  final String area;
+  final String tab;
+  final int hardcoreScore;
+  final List<String> hostFaceTraits;
+  final int interactionCount;
+  final DateTime lastActiveTime;
+  final double matchScore;
+  final String? hostUserId;
+  final String hostNickname;
+  final int hostCreditScore;
+  final DateTime eventDateTime;
+  final String eventLocation;
+  final bool isPinned;
+  final int pinPriority;
+  final bool hasApplied;
+  final String? applicationStatus;
 
-  bool get isFull => currentMembers >= maxMembers;
+  bool get isFull => currentMembers >= peopleLimit;
 
-  MatchPost copyWith({
-    String? id,
-    String? title,
-    String? description,
-    String? category,
-    int? competitiveness,
-    int? currentMembers,
-    int? maxMembers,
-    bool? hasApplied,
-  }) {
-    return MatchPost(
-      id: id ?? this.id,
-      title: title ?? this.title,
-      description: description ?? this.description,
-      category: category ?? this.category,
-      competitiveness: competitiveness ?? this.competitiveness,
-      currentMembers: currentMembers ?? this.currentMembers,
-      maxMembers: maxMembers ?? this.maxMembers,
-      hasApplied: hasApplied ?? this.hasApplied,
-    );
-  }
+  bool get hasPendingApplication =>
+      hasApplied || applicationStatus == 'pending';
+
+  bool get hasApprovedApplication => applicationStatus == 'approved';
+
+  int get peopleLimit => maxPeople ?? maxMembers;
 }
-
-final List<MatchPost> mockMatchPosts = [
-  MatchPost(
-    id: 'post1',
-    title: '周六下午寻找《阿瓦隆》大神局',
-    description: '想约一组 5 人局，必须是硬核老手。',
-    category: 'BoardGames',
-    competitiveness: 95, // 对应【大神 100分】档位
-    currentMembers: 3,
-    maxMembers: 5,
-  ),
-  MatchPost(
-    id: 'post2',
-    title: '周日早晨街头篮球 3v3',
-    description: '附近友邻一起玩，装备齐全，轻松娱乐。',
-    category: 'Sports',
-    competitiveness: 30, // 对应【普通 25分】档位
-    currentMembers: 5,
-    maxMembers: 5,
-  ),
-  MatchPost(
-    id: 'post3',
-    title: '周五晚桌游《卡坦》进阶局',
-    description: '熟悉规则，氛围轻松。',
-    category: 'BoardGames',
-    competitiveness: 55, // 对应【进阶 50分】档位
-    currentMembers: 2,
-    maxMembers: 4,
-  ),
-  MatchPost(
-    id: 'post4',
-    title: '周末美食探店（休闲拼餐）',
-    description: '想找 4 人拼餐。',
-    category: 'Food',
-    competitiveness: 10, // 对应【新手 0分】档位，防止乱入大神局
-    currentMembers: 3,
-    maxMembers: 4,
-  ),
-  MatchPost(
-    id: 'post5',
-    title: '周六夜《电音派对》',
-    description: '需要 5 人一起拼车入场。',
-    category: 'Sports', // 修复拼写：Sport -> Sports
-    competitiveness: 95, 
-    currentMembers: 4,
-    maxMembers: 5,
-  ),
-];

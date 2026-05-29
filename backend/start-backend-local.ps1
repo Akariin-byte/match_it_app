@@ -1,5 +1,5 @@
 # Start MATCHit backend without Docker (local Postgres on D:)
-param([switch]$Foreground)
+param([switch]$Foreground, [switch]$Restart)
 
 $ErrorActionPreference = "Continue"
 $BackendRoot = $PSScriptRoot
@@ -33,8 +33,21 @@ if ($LASTEXITCODE -ne 0) {
 }
 Write-Ok "PostgreSQL localhost:5432"
 
-if (Test-ApiHealthy) {
+$exe = "D:\gopath\bin\matchit-api.exe"
+if (-not (Test-Path $exe)) { $exe = Join-Path $ApiDir "matchit-api.exe" }
+
+if ($Restart) {
+    Write-Step "Restart: stopping old API and rebuilding ..."
+    Get-Process matchit-api -ErrorAction SilentlyContinue | Stop-Process -Force
+    Start-Sleep -Seconds 1
+    Push-Location $ApiDir
+    go build -o $exe .
+    if ($LASTEXITCODE -ne 0) { Pop-Location; exit 1 }
+    Pop-Location
+    Write-Ok "Rebuilt $exe"
+} elseif (Test-ApiHealthy) {
     Write-Ok "API already running: $HealthUrl"
+    Write-Host "    Tip: use -Restart to rebuild and replace the running API" -ForegroundColor Yellow
     exit 0
 }
 
@@ -42,9 +55,6 @@ $env:DATABASE_URL = "postgres://matchit:matchit@localhost:5432/matchit?sslmode=d
 $env:JWT_SECRET = "matchit-local-dev-secret"
 $env:SMS_MOCK = "true"
 $env:PORT = "8080"
-
-$exe = "D:\gopath\bin\matchit-api.exe"
-if (-not (Test-Path $exe)) { $exe = Join-Path $ApiDir "matchit-api.exe" }
 
 Write-Step "Starting Go API ..."
 if ($Foreground) {

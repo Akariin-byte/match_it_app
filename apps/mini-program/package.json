@@ -1,0 +1,37 @@
+{
+  "name": "match-it-mini",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "predev:mp-weixin": "node scripts/apply-weixin-appid.mjs && node scripts/gen-tab-icons.mjs",
+    "dev:mp-weixin": "set SASS_SILENCE_DEPRECATIONS=legacy-js-api&& uni -p mp-weixin",
+    "prebuild:mp-weixin": "node scripts/apply-weixin-appid.mjs && node scripts/gen-tab-icons.mjs",
+    "build:mp-weixin": "set SASS_SILENCE_DEPRECATIONS=legacy-js-api&& uni build -p mp-weixin",
+    "setup:dev": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/setup-dev.ps1",
+    "fix:devtools": "node scripts/fix-wechat-devtools.mjs",
+    "dev:h5": "set SASS_SILENCE_DEPRECATIONS=legacy-js-api&& uni",
+    "type-check": "vue-tsc --noEmit",
+    "gen:icons": "node scripts/gen-tab-icons.mjs"
+  },
+  "dependencies": {
+    "@dcloudio/uni-app": "3.0.0-4010520240507001",
+    "@dcloudio/uni-app-plus": "3.0.0-4010520240507001",
+    "@dcloudio/uni-components": "3.0.0-4010520240507001",
+    "@dcloudio/uni-h5": "3.0.0-4010520240507001",
+    "@dcloudio/uni-mp-weixin": "3.0.0-4010520240507001",
+    "pinia": "^2.2.6",
+    "vue": "^3.4.21"
+  },
+  "devDependencies": {
+    "@dcloudio/types": "^3.4.14",
+    "@dcloudio/uni-automator": "3.0.0-4010520240507001",
+    "@dcloudio/uni-cli-shared": "3.0.0-4010520240507001",
+    "@dcloudio/uni-stacktracey": "3.0.0-4010520240507001",
+    "@dcloudio/vite-plugin-uni": "3.0.0-4010520240507001",
+    "@vue/tsconfig": "^0.5.1",
+    "sass": "^1.77.8",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.8",
+    "vue-tsc": "^2.0.29"
+  }
+}
